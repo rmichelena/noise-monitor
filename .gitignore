@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large/generated files stay on the server, not in git)
+data/
+clips/
+reports/
+*.db
+
+# Models (large binary files — download separately)
+models/*.tflite
+
+# Agent tools (Cursor internal)
+agent-tools/
+agent-transcripts/
