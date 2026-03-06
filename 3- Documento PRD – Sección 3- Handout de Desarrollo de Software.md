@@ -9,39 +9,48 @@ Este documento detalla la arquitectura de software, dependencias, estructuras de
 ### 0. Arquitectura de Datos del Sistema
 
 ```
-             ┌──────────────────────────────┐
-             │   Lenovo ThinkCentre M910q   │
-             │   Ubuntu Server 24.04 LTS    │
-             │                              │
-             │  ┌────────────────┐          │
-Camera ──────┼─▶│ /dev/video0    │          │
- (USB 2.0)   │  │ OpenCV capture │          │
-             │  └──────┬─────────┘          │
-             │         │ frames             │
-             │         ▼                    │
-             │  ┌────────────────┐          │
+             ┌──────────────────────────────────┐
+             │   Lenovo ThinkCentre M910q       │
+             │   Ubuntu Server 24.04 LTS        │
+             │                                  │
+             │  ┌────────────────┐              │
+Camera ──────┼─▶│ /dev/video0    │              │
+ (USB 2.0)   │  │ OpenCV capture │              │
+             │  └──────┬─────────┘              │
+             │         │ frames                 │
+             │         ▼                        │
+             │  ┌────────────────┐              │
              │  │ Edge TPU       │◀── Coral (USB 3.0)
-             │  │ ai-edge-litert │          │
-             │  └──────┬─────────┘          │
-             │         │ detections         │
-             │         ▼                    │
-             │  ┌────────────────┐          │
-Mic ─────────┼─▶│ sounddevice    │          │
- (iMM-6C)   │  │ A-weighting    │          │
-             │  └──────┬─────────┘          │
-             │         │ dB levels          │
-             │         ▼                    │
-             │  ┌────────────────┐          │
-             │  │ Event Manager  │          │
-             │  │ correlación    │          │
-             │  │ audio + visión │          │
-             │  └──────┬─────────┘          │
-             │         │                    │
-             │    ┌────┴────┐               │
-             │    ▼         ▼               │
-             │  SQLite    clips/            │
-             │  events.db  *.mp4            │
-             └──────────────────────────────┘
+             │  │ ai-edge-litert │              │
+             │  └──────┬─────────┘              │
+             │         │ detections             │
+             │         ▼                        │
+             │  ┌────────────────┐              │
+Mic ─────────┼─▶│ sounddevice    │              │
+ (iMM-6C)   │  │ A-weighting    │              │
+             │  └──────┬─────────┘              │
+             │         │ dB levels              │
+             │         ▼                        │
+             │  ┌────────────────┐              │
+             │  │ Event Manager  │              │
+             │  │ correlación    │              │
+             │  │ audio + visión │              │
+             │  └──────┬─────────┘              │
+             │         │                        │
+             │    ┌────┴────┐                   │
+             │    ▼         ▼                   │
+             │  SQLite    clips/                │
+             │  events.db  *.mp4                │
+             │    │                             │
+             │    ▼                             │
+             │  ┌────────────────┐              │
+             │  │ FastAPI + HTMX │ ◀── Browser  │
+             │  │ :8000          │    (red local)│
+             │  │ dashboard,     │              │
+             │  │ API REST,      │              │
+             │  │ reportes       │              │
+             │  └────────────────┘              │
+             └──────────────────────────────────┘
 ```
 
 ---
@@ -50,7 +59,7 @@ Mic ─────────┼─▶│ sounddevice    │          │
 
 *Sistema Operativo:*
 ```
-Ubuntu Server 22.04 LTS o Debian 12 (64-bit)
+Ubuntu Server 24.04 LTS (64-bit)
 Sin interfaz gráfica (headless)
 Hardware: Lenovo ThinkCentre M910q (i5-7500T, 8 GB RAM, 256 GB SSD)
 ```
@@ -72,6 +81,12 @@ scipy>=1.13.0
 pandas>=3.0.0
 matplotlib>=3.9.0
 
+# Dashboard web
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+jinja2>=3.1.0
+python-multipart>=0.0.9
+
 # Utilidades
 pyyaml>=6.0
 ```
@@ -80,11 +95,9 @@ pyyaml>=6.0
 
 *Dependencias del Sistema (apt):*
 ```bash
-sudo apt install -y libatlas-base-dev ffmpeg v4l-utils
-# Para Coral Edge TPU:
-echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | sudo tee /etc/apt/sources.list.d/coral-edgetpu.list
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
-sudo apt update && sudo apt install -y libedgetpu1-std python3-pycoral
+sudo apt install -y libatlas-base-dev ffmpeg v4l-utils libportaudio2
+# Para Coral Edge TPU (usar .deb de feranick, NO el repo de Google):
+# Ver Doc 7, sección 8 para instrucciones detalladas.
 ```
 
 ---
@@ -93,22 +106,38 @@ sudo apt update && sudo apt install -y libedgetpu1-std python3-pycoral
 
 ```
 noise-monitor/
-├── config.yaml           # Parámetros configurables
-├── main.py               # Script principal (hilos audio/video)
-├── calibrate.py          # Calibración inicial del micrófono
-├── report.py             # Generador de reportes semanales
-├── schema.sql            # Definición de base de datos
+├── config.yaml              # Parámetros configurables
+├── main.py                  # Script principal (hilos audio/video + web server)
+├── calibrate.py             # Calibración inicial del micrófono
+├── schema.sql               # Definición de base de datos
+├── requirements.txt         # Dependencias Python
 ├── src/
-│   ├── audio_monitor.py  # Clase para captura y análisis de audio
-│   ├── video_monitor.py  # Clase para captura y detección
-│   ├── event_manager.py  # Lógica de correlación y guardado
-│   └── utils.py          # Filtro A-weighting, helpers
+│   ├── audio_monitor.py     # Clase para captura y análisis de audio
+│   ├── video_monitor.py     # Clase para captura y detección
+│   ├── event_manager.py     # Lógica de correlación y guardado
+│   ├── report_generator.py  # Generación de reportes (PDF/HTML)
+│   └── utils.py             # Filtro A-weighting, helpers
+├── web/
+│   ├── app.py               # FastAPI application
+│   ├── routes.py            # Endpoints (API + páginas)
+│   ├── templates/           # Templates Jinja2 + HTMX
+│   │   ├── base.html
+│   │   ├── dashboard.html
+│   │   ├── events.html
+│   │   └── reports.html
+│   └── static/              # CSS, favicon
+├── scripts/
+│   ├── test_all.py          # Test integrado de hardware
+│   ├── test_camera.py
+│   ├── test_audio.py
+│   └── test_coral.py
 ├── models/
-│   └── efficientdet_lite0_edgetpu.tflite
+│   ├── ssd_mobilenet_v2_coco_edgetpu.tflite
+│   └── coco_labels.txt
 ├── data/
-│   ├── events.db         # SQLite (en SSD interno)
-│   └── clips/            # Videos de eventos (en SSD interno)
-└── reports/              # PDFs/HTMLs generados
+│   ├── events.db            # SQLite (en SSD interno)
+│   └── clips/               # Videos de eventos
+└── reports/                 # PDFs/HTMLs generados
 ```
 
 ---
@@ -179,9 +208,14 @@ speed:
 
 # Rutas (SSD interno del Mini-PC)
 paths:
-  database: /opt/noise-monitor/data/events.db
-  clips: /opt/noise-monitor/data/clips
-  reports: /opt/noise-monitor/reports
+  database: /home/roberto/noise-monitor/data/events.db
+  clips: /home/roberto/noise-monitor/data/clips
+  reports: /home/roberto/noise-monitor/reports
+
+# Dashboard web
+web:
+  host: 0.0.0.0
+  port: 8000
 
 # Jerarquía de ruido para inferencia
 noise_priority:
@@ -456,42 +490,22 @@ if __name__ == '__main__':
 
 1. *Threading vs Asyncio:* Se recomienda `threading` por simplicidad y porque `sounddevice` usa callbacks síncronos. `asyncio` añadiría complejidad sin beneficio real aquí.
 
-2. *SSD interno:* El ThinkCentre M910q tiene SSD de 256 GB integrado. No se necesita montaje externo. Los datos se almacenan en `/opt/noise-monitor/data/`.
+2. *SSD interno:* El ThinkCentre M910q tiene SSD de 256 GB integrado. No se necesita montaje externo. Los datos se almacenan en `~/noise-monitor/data/`.
 
-3. *Servicio systemd:* Para ejecución automática al boot:
-   ```ini
-   # /etc/systemd/system/noise-monitor.service
-   [Unit]
-   Description=Noise Monitor
-   After=multi-user.target
-   
-   [Service]
-   Type=simple
-   User=noise
-   WorkingDirectory=/opt/noise-monitor
-   ExecStart=/usr/bin/python3 main.py
-   Restart=always
-   RestartSec=10
-   
-   [Install]
-   WantedBy=multi-user.target
-   ```
+3. *Dashboard web (FastAPI + HTMX):* Se ejecuta como parte del proceso principal (`main.py` arranca uvicorn en un hilo). No requiere proxy reverso para uso en red local. Funcionalidades:
+   - Nivel de dB en tiempo real (polling cada 1s vía HTMX)
+   - Tabla de eventos recientes con reproducción de clips
+   - Histogramas por hora/día (matplotlib renderizado server-side)
+   - Generación de reportes PDF/HTML bajo demanda
+   - API REST (`/api/events`, `/api/stats`, `/api/clips/{id}`) para integración externa
 
-4. *Cron para reportes:*
-   ```bash
-   # crontab -e
-   0 6 * * 1 /usr/bin/python3 /opt/noise-monitor/report.py
-   ```
+4. *Servicio systemd:* Ver Doc 8 (Deployment & Operations) para configuración completa del servicio, watchdog, crons y operación 24/7.
 
 5. *Detección de dispositivos:* Antes de la primera ejecución, identificar índices de cámara y micrófono:
    ```bash
-   v4l2-ctl --list-devices          # Cámara USB
-   python3 -c "import sounddevice; print(sounddevice.query_devices())"  # Micrófono
+   v4l2-ctl --list-devices
+   python3 -c "import sounddevice; print(sounddevice.query_devices())"
    ```
    Ajustar `video.source` y `audio.device_index` en `config.yaml` según los resultados.
 
 6. *Pruebas iniciales:* Antes de desplegar en el balcón, probar en interior con videos de tráfico en un monitor para validar que la detección funciona.
-
----
-
-*Fin del documento PRD completo.*

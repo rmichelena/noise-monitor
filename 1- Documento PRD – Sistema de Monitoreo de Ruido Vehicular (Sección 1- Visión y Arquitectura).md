@@ -9,16 +9,18 @@ La calle frente al departamento presenta un efecto “cañón urbano” que ampl
 - Registrar nivel sonoro (dB ponderación A) y, cuando sea posible, una estimación de velocidad.  
 - Almacenar eventos en una base de datos local y generar reportes periódicos (CSV/PDF/HTML) con resúmenes semanales (“motos >80 dB”, histogramas horarios, etc.).  
 - Producir clips de video cortos autocontenidos que puedan enviarse como evidencia (incluyendo un “Top 10” de picos semanales como opción).
+- Proveer un dashboard web en red local para monitoreo en tiempo real (nivel de dB actual, eventos recientes, clips, histogramas) y generación de reportes bajo demanda.
 
 *3. Alcance funcional*  
 - *Detección continua*: audio monitoreado en tiempo real para disparar eventos (pico instantáneo o persistencia).  
 - *Buffer circular*: guarda ±5 s de video y audio para capturar el momento exacto del paso del vehículo.  
 - *Correlación audio-visión*: el trigger se confirma sólo si hay al menos un vehículo en cuadro; los eventos guardan clase, dB, carriles ocupados y nivel de confianza en la atribución.  
 - *Reportes automáticos*: script semanal que genera estadísticas y, opcionalmente, compila los clips más ruidosos.  
+- *Dashboard web*: interfaz accesible desde la red local (`http://10.10.10.137:8000`) con FastAPI + HTMX. Muestra nivel de dB en vivo, tabla de eventos recientes con clips reproducibles, histogramas por hora/día, y generación de reportes on-demand. No requiere frameworks JS pesados.  
 
 *4. Arquitectura propuesta*  
 - *Hardware base*: Mini-PC Lenovo ThinkCentre M910q (i5-7500T, 8 GB RAM, 256 GB SSD interno) con Coral USB Accelerator, cámara USB industrial ELP 1080p ≈160° y micrófono de medición Dayton iMM-6C (USB-C nativo, omnidireccional, calibrado individualmente).  
-- *Software*: Ubuntu Server 22.04 LTS o Debian 12 (headless); captura de video con `opencv-python-headless` vía V4L2; inferencia con `tflite-runtime` + `pycoral` (modelo EfficientDet-Lite0 o SSD MobileNet V2 optimizado para Edge TPU); audio con `sounddevice` + `scipy` (filtro A-weighting); persistencia en SQLite; reportes con `pandas` + `matplotlib`.  
+- *Software*: Ubuntu Server 24.04 LTS (headless); Python 3.12; captura de video con `opencv-python-headless` vía V4L2; inferencia con `ai-edge-litert` + `libedgetpu` de feranick (modelo SSD MobileNet V2 optimizado para Edge TPU); audio con `sounddevice` + `scipy` (filtro A-weighting); persistencia en SQLite; dashboard web con `FastAPI` + `HTMX`; reportes con `pandas` + `matplotlib`.  
 - *Flujo de datos*:  
   1. Audio y video se almacenan en buffers circulares independientes.  
   2. El hilo de audio aplica ponderación A y evalúa dos condiciones: (a) pico >85 dB, (b) persistencia >70 dB durante 1.5 s.  
