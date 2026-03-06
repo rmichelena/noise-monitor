@@ -76,7 +76,13 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
   - Manejo limpio de señales (SIGINT/SIGTERM → shutdown graceful)
   - Logging estructurado (nivel configurable)
 
-### 1.7 Validación de pipeline
+### 1.7 Evaluación de modelo
+
+- [ ] Descargar `efficientdet_lite0_edgetpu.tflite` pre-compilado de Google Coral model zoo (320x320 input).
+- [ ] Comparar MobileNet V2 (~3ms, mAP 22%) vs EfficientDet-Lite0 (~10ms, mAP 26%) usando clips reales de la cámara.
+- [ ] Elegir modelo definitivo y actualizar `config.yaml` y `models/`. Ambos corren 100% en Edge TPU; la velocidad no es cuello de botella (procesamos 6 frames/s).
+
+### 1.8 Validación de pipeline
 
 - [ ] Test manual: reproducir video de tráfico frente a la cámara + ruido fuerte → verificar que se genera evento en SQLite con clip.
 - [ ] Test de 1 hora continua sin crashes ni memory leaks.

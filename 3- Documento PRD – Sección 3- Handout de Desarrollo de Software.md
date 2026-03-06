@@ -93,6 +93,8 @@ pyyaml>=6.0
 
 **Nota sobre el Coral Edge TPU:** No se usa `pycoral` ni `tflite-runtime` (oficialmente solo soportan hasta Python 3.9). Se usa `ai-edge-litert` (sucesor de tflite-runtime) con `libedgetpu` del fork [feranick/libedgetpu](https://github.com/feranick/libedgetpu), que provee `.deb` pre-compilados para Ubuntu 24.04 compatibles con TensorFlow moderno. Ver Doc 7 sección 8 para instrucciones de instalación.
 
+**Nota sobre elección de modelo:** Se usa SSD MobileNet V2 para validación inicial, con plan de migrar a EfficientDet-Lite0 (+4 puntos mAP, ~10ms vs ~3ms, ambos 100% Edge TPU). YOLO no es viable porque el Edge TPU compiler solo soporta un subconjunto de operaciones TFLite — los modelos YOLO compilan parcialmente y terminan corriendo mayormente en CPU, perdiendo la ventaja del acelerador.
+
 *Dependencias del Sistema (apt):*
 ```bash
 sudo apt install -y libatlas-base-dev ffmpeg v4l-utils libportaudio2
