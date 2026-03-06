@@ -1,8 +1,48 @@
 ## Documento PRD – Sección 3: Handout de Desarrollo de Software
 *Responsable:* Claude
-*Versión:* 2.0 - Especificación Técnica (actualizada para Mini-PC x86 + cámara USB + iMM-6C)
+*Versión:* 3.0 - Especificación Técnica (Mini-PC x86, cámara USB, iMM-6C, Python 3.12 + ai-edge-litert)
 
 Este documento detalla la arquitectura de software, dependencias, estructuras de datos y lógica de implementación para el desarrollador encargado de construir el sistema.
+
+---
+
+### 0. Arquitectura de Datos del Sistema
+
+```
+             ┌──────────────────────────────┐
+             │   Lenovo ThinkCentre M910q   │
+             │   Ubuntu Server 24.04 LTS    │
+             │                              │
+             │  ┌────────────────┐          │
+Camera ──────┼─▶│ /dev/video0    │          │
+ (USB 2.0)   │  │ OpenCV capture │          │
+             │  └──────┬─────────┘          │
+             │         │ frames             │
+             │         ▼                    │
+             │  ┌────────────────┐          │
+             │  │ Edge TPU       │◀── Coral (USB 3.0)
+             │  │ ai-edge-litert │          │
+             │  └──────┬─────────┘          │
+             │         │ detections         │
+             │         ▼                    │
+             │  ┌────────────────┐          │
+Mic ─────────┼─▶│ sounddevice    │          │
+ (iMM-6C)   │  │ A-weighting    │          │
+             │  └──────┬─────────┘          │
+             │         │ dB levels          │
+             │         ▼                    │
+             │  ┌────────────────┐          │
+             │  │ Event Manager  │          │
+             │  │ correlación    │          │
+             │  │ audio + visión │          │
+             │  └──────┬─────────┘          │
+             │         │                    │
+             │    ┌────┴────┐               │
+             │    ▼         ▼               │
+             │  SQLite    clips/            │
+             │  events.db  *.mp4            │
+             └──────────────────────────────┘
+```
 
 ---
 
@@ -17,23 +57,26 @@ Hardware: Lenovo ThinkCentre M910q (i5-7500T, 8 GB RAM, 256 GB SSD)
 
 *Dependencias Python (requirements.txt):*
 ```
-# Visión (captura vía OpenCV + inferencia Coral)
-opencv-python-headless>=4.8.0
-tflite-runtime>=2.14.0
-pycoral>=2.0.0
-numpy>=1.24.0
+# Visión (captura vía OpenCV)
+opencv-python-headless>=4.9.0
+numpy>=2.0.0
+
+# Inferencia (Coral Edge TPU vía ai-edge-litert + feranick/libedgetpu)
+ai-edge-litert>=2.1.0
 
 # Audio (Dayton iMM-6C vía USB, captura con sounddevice)
-sounddevice>=0.4.6
-scipy>=1.11.0
+sounddevice>=0.5.0
+scipy>=1.13.0
 
 # Datos y Reportes
-pandas>=2.0.0
-matplotlib>=3.7.0
+pandas>=3.0.0
+matplotlib>=3.9.0
 
 # Utilidades
 pyyaml>=6.0
 ```
+
+**Nota sobre el Coral Edge TPU:** No se usa `pycoral` ni `tflite-runtime` (oficialmente solo soportan hasta Python 3.9). Se usa `ai-edge-litert` (sucesor de tflite-runtime) con `libedgetpu` del fork [feranick/libedgetpu](https://github.com/feranick/libedgetpu), que provee `.deb` pre-compilados para Ubuntu 24.04 compatibles con TensorFlow moderno. Ver Doc 7 sección 8 para instrucciones de instalación.
 
 *Dependencias del Sistema (apt):*
 ```bash
@@ -217,14 +260,18 @@ def video_thread():
     4. Escucha event_queue para confirmar y guardar eventos
     """
     import cv2
-    from pycoral.utils.edgetpu import make_interpreter
+    from ai_edge_litert.interpreter import Interpreter, load_delegate
     
     cap = cv2.VideoCapture(config['video']['source'])
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config['video']['resolution'][0])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config['video']['resolution'][1])
     cap.set(cv2.CAP_PROP_FPS, config['video']['framerate'])
     
-    interpreter = make_interpreter('models/efficientdet_lite0_edgetpu.tflite')
+    delegate = load_delegate('libedgetpu.so.1', options={'device': 'usb'})
+    interpreter = Interpreter(
+        model_path='models/ssd_mobilenet_v2_coco_edgetpu.tflite',
+        experimental_delegates=[delegate]
+    )
     interpreter.allocate_tensors()
     
     frame_count = 0
