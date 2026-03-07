@@ -28,17 +28,17 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
 
 ### 1.1 Configuración y base de datos
 
-- [ ] Crear `config.yaml` real basado en la spec de Doc 3 sección 4. Ajustar `audio.device_index` (actualmente `5` para iMM-6C) y `video.source` (actualmente `0`).
-- [ ] Crear `schema.sql` según Doc 3 sección 3. Ejecutar para crear `data/events.db`.
-- [ ] Crear `requirements.txt` con las versiones exactas instaladas en el venv.
+- [x] Crear `config.yaml` real basado en la spec de Doc 3 sección 4. Ajustar `audio.device_index` (actualmente `5` para iMM-6C) y `video.source` (actualmente `0`).
+- [x] Crear `schema.sql` según Doc 3 sección 3. Ejecutar para crear `data/events.db`.
+- [x] Crear `requirements.txt` con las versiones exactas instaladas en el venv.
 
 ### 1.2 Utilidades base
 
-- [ ] Implementar `src/utils.py`: filtro A-weighting IEC 61672-1 (ver Doc 3 sección 6), función de conversión RMS→dB, carga de config.yaml, inicialización de SQLite.
+- [x] Implementar `src/utils.py`: filtro A-weighting IEC 61672-1 (ver Doc 3 sección 6), función de conversión RMS→dB, carga de config.yaml, inicialización de SQLite.
 
 ### 1.3 Monitor de audio
 
-- [ ] Implementar `src/audio_monitor.py`: clase `AudioMonitor` con:
+- [x] Implementar `src/audio_monitor.py`: clase `AudioMonitor` con:
   - Captura continua vía `sounddevice.InputStream` callback
   - Buffer circular de audio (configurable, default 10s)
   - Aplicación de filtro A-weighting en cada bloque
@@ -49,7 +49,7 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
 
 ### 1.4 Monitor de video
 
-- [ ] Implementar `src/video_monitor.py`: clase `VideoMonitor` con:
+- [x] Implementar `src/video_monitor.py`: clase `VideoMonitor` con:
   - Captura continua vía `cv2.VideoCapture`
   - Buffer circular de frames (configurable, default 10s)
   - Inferencia cada N frames usando Coral Edge TPU (`ai-edge-litert` + delegate `libedgetpu.so.1`)
@@ -60,7 +60,7 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
 
 ### 1.5 Event Manager
 
-- [ ] Implementar `src/event_manager.py`: clase `EventManager` con:
+- [x] Implementar `src/event_manager.py`: clase `EventManager` con:
   - Recibe triggers del AudioMonitor
   - Consulta VideoMonitor.recent_detections para correlación
   - Lógica de asignación de culpable por jerarquía (truck/bus > motorcycle > car, ver Doc 3 sección 7)
@@ -70,7 +70,7 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
 
 ### 1.6 Orquestador principal
 
-- [ ] Implementar `main.py`:
+- [x] Implementar `main.py`:
   - Carga config, inicializa DB
   - Arranca AudioMonitor, VideoMonitor y EventManager en threads
   - Manejo limpio de señales (SIGINT/SIGTERM → shutdown graceful)

@@ -1,0 +1,55 @@
+# Parámetros de audio
+audio:
+  device_index: 5             # iMM-6C (verificar con sounddevice.query_devices())
+  sample_rate: 44100
+  block_size: 4096            # ~93ms por bloque (evita input overflow)
+  calibration_offset: 0.0     # dB a sumar tras calibración
+
+# Umbrales de disparo
+triggers:
+  peak_db: 85                 # Disparo instantáneo
+  sustained_db: 70            # Umbral de persistencia
+  sustained_duration_ms: 1500 # Tiempo mínimo sobre umbral
+  correlation_db: 65         # Umbral si hay vehículo visible
+
+# Parámetros de video (cámara USB ELP vía OpenCV)
+video:
+  source: 0                   # Índice del dispositivo USB (o "/dev/video0")
+  resolution: [1920, 1080]
+  framerate: 30
+  inference_interval: 5       # Procesar 1 de cada N frames
+  detection_threshold: 0.5    # Confianza mínima del modelo
+
+# Buffer circular
+buffer:
+  audio_seconds: 10
+  video_seconds: 10
+  pre_event_seconds: 5
+  post_event_seconds: 5
+
+# Estimación de velocidad
+speed:
+  enabled: true
+  reference_distance_m: 10.0  # Distancia física entre líneas
+  line1_y_pixel: 400          # Coordenada Y de línea 1
+  line2_y_pixel: 680          # Coordenada Y de línea 2
+
+# Rutas (relativas al directorio del proyecto)
+paths:
+  database: data/events.db
+  clips: data/clips
+  reports: reports
+
+# Dashboard web
+web:
+  host: 0.0.0.0
+  port: 8000
+
+# Jerarquía de ruido para inferencia
+noise_priority:
+  truck: 1
+  bus: 1
+  motorcycle: 2
+  car: 3
+  bicycle: 4
+  person: 5

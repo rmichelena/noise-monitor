@@ -18,6 +18,7 @@ Thumbs.db
 
 # Data (large/generated files stay on the server, not in git)
 data/
+frame_test.jpg
 clips/
 reports/
 *.db
