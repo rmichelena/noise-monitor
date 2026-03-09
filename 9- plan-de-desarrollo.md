@@ -22,6 +22,58 @@ Checklist ejecutable para el desarrollo del sistema. Cada item incluye contexto 
 
 ---
 
+## Fase 0.5 — Videos de prueba para desarrollo sin balcón
+
+Mientras la cámara no esté instalada en el balcón, se usan videos de tráfico descargados de YouTube como fuente simulada. El pipeline acepta tanto un índice de dispositivo USB (int) como un path a archivo de video (string) en `config.yaml` → `video.source`, gracias a que `cv2.VideoCapture` soporta ambos.
+
+### 0.5.1 Descarga de videos
+
+- [ ] Instalar `yt-dlp` en el server: `pip install yt-dlp` (fuera del venv, o con pipx).
+- [ ] Crear directorio `data/test_videos/` en el server.
+- [ ] Descargar 3-4 videos de tráfico con audio real (buscar "traffic camera live" o "urban traffic noise"):
+  ```bash
+  cd ~/noise-monitor/data/test_videos
+  yt-dlp -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" \
+    --merge-output-format mp4 -o "traffic_%(id)s.mp4" "URL_DEL_VIDEO"
+  ```
+  Criterios de selección: ángulo similar al del balcón (vista cenital o semi-cenital de calle), con audio de tráfico real (motores, bocinas, etc.), variedad de condiciones (día, noche, lluvia si hay).
+- [ ] Verificar que los videos tienen audio: `ffprobe -i archivo.mp4` (debe mostrar stream de audio).
+
+### 0.5.2 Configuración para modo simulado
+
+- [ ] En `config.yaml`, cambiar `video.source` de `0` a la ruta del video:
+  ```yaml
+  video:
+    source: "data/test_videos/traffic_xxx.mp4"  # ruta relativa al proyecto
+  ```
+- [ ] En `src/video_monitor.py`, agregar lógica de loop: cuando `cv2.VideoCapture.read()` retorna `False` (fin del video), hacer `cap.set(cv2.CAP_PROP_POS_FRAMES, 0)` para reiniciar desde el inicio. Esto permite correr el pipeline continuamente con un video finito.
+- [ ] Para audio: el video de YouTube ya tiene pista de audio. Dos opciones:
+  - **Opción A (recomendada)**: extraer el audio del video con ffmpeg y alimentarlo al pipeline en lugar del micrófono:
+    ```bash
+    ffmpeg -i traffic_xxx.mp4 -vn -ar 44100 -ac 1 -f wav traffic_xxx_audio.wav
+    ```
+    Luego en `audio_monitor.py`, agregar modo "file" que lee el .wav en chunks simulando captura en tiempo real.
+  - **Opción B (más simple)**: usar el micrófono real (iMM-6C) y reproducir el audio del video por un parlante cerca. Menos reproducible pero no requiere cambios en audio_monitor.
+- [ ] Agregar flag en `config.yaml` para modo simulado:
+  ```yaml
+  debug:
+    simulate: true              # true = video de archivo, false = cámara real
+    loop_video: true            # reiniciar video al terminar
+    audio_from_video: true      # extraer audio del video en lugar de usar micrófono
+  ```
+
+### 0.5.3 Revertir para producción
+
+Cuando se instale la cámara en el balcón, solo hay que cambiar:
+```yaml
+video:
+  source: 0                     # volver al dispositivo USB
+debug:
+  simulate: false
+```
+
+---
+
 ## Fase 1 — Pipeline central de captura
 
 El objetivo es que el sistema detecte y registre eventos de ruido con correlación visual. Todo el código vive en `src/` y se orquesta desde `main.py`.
@@ -216,3 +268,4 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 - **Activar venv en server:** `cd ~/noise-monitor && source venv/bin/activate`
 - **Git:** El repo está en el directorio local del proyecto. Hacer commit después de cada fase o cambio significativo.
 - **Dispositivos USB:** Cámara = índice 0, micrófono iMM-6C = índice 5 (puede cambiar al reboot, verificar con `sounddevice.query_devices()`).
+- **Modo simulado:** La cámara no está instalada en el balcón todavía. Para desarrollo se usan videos de tráfico descargados de YouTube (ver Fase 0.5). `config.yaml` → `video.source` acepta int (dispositivo) o string (archivo). Asegurar que `VideoMonitor` implemente loop de video y que `AudioMonitor` soporte lectura de audio desde archivo .wav.
