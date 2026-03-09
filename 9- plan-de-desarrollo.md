@@ -76,15 +76,41 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
   - Manejo limpio de señales (SIGINT/SIGTERM → shutdown graceful)
   - Logging estructurado (nivel configurable)
 
-### 1.7 Evaluación de modelo
+### 1.7 Clasificador de audio (YAMNet)
+
+YAMNet clasifica el tipo de sonido (521 clases AudioSet) para diferenciar vehículos de construcción, animales, alarmas, etc. Corre en CPU, no necesita el Coral. Ver Doc 3 sección 8.
+
+- [ ] Descargar `yamnet.tflite` y `yamnet_labels.txt` del repo TFLite model hub. Guardar en `models/`.
+- [ ] Instalar `resampy` en el venv del server (para resampleo 44.1kHz → 16kHz).
+- [ ] Implementar `src/audio_classifier.py`: clase `AudioClassifier` con:
+  - Carga de YAMNet TFLite vía `ai-edge-litert` (mismo runtime, sin delegate Edge TPU)
+  - Resampleo de audio input a 16kHz mono
+  - Inferencia → top class + score
+  - Mapeo de clase AudioSet → categoría propia (`vehicle`, `construction`, `animal`, `alarm`, `human`, `other`) según `config.yaml` → `audio_classifier.category_map`
+  - Score mínimo configurable (`min_score`, default 0.3)
+- [ ] Crear `scripts/test_yamnet.py`: grabar 3s de audio, clasificar, imprimir top-5 clases con scores.
+- [ ] Actualizar `schema.sql`: agregar columnas `sound_class`, `sound_category`, `sound_confidence` a tabla events. Agregar índice `idx_sound_category`.
+
+### 1.8 Integración de YAMNet en pipeline
+
+- [ ] Refactorizar `src/audio_monitor.py`: cuando se dispara un trigger, clasificar la ventana de audio con `AudioClassifier` antes de encolar el evento.
+- [ ] Refactorizar `src/event_manager.py`: bifurcación según `sound_category`:
+  - `vehicle` → correlación visual (VideoMonitor) como antes
+  - Cualquier otra categoría → registro directo sin video
+  - En ambos casos: guardar `sound_class`, `sound_category`, `sound_confidence` en el evento
+- [ ] Actualizar `config.yaml` con sección `audio_classifier` (model_path, labels_path, min_score, category_map).
+- [ ] Actualizar `main.py` para instanciar `AudioClassifier` y pasarlo al `AudioMonitor`.
+
+### 1.9 Evaluación de modelo de video
 
 - [ ] Descargar `efficientdet_lite0_edgetpu.tflite` pre-compilado de Google Coral model zoo (320x320 input).
 - [ ] Comparar MobileNet V2 (~3ms, mAP 22%) vs EfficientDet-Lite0 (~10ms, mAP 26%) usando clips reales de la cámara.
 - [ ] Elegir modelo definitivo y actualizar `config.yaml` y `models/`. Ambos corren 100% en Edge TPU; la velocidad no es cuello de botella (procesamos 6 frames/s).
 
-### 1.8 Validación de pipeline
+### 1.10 Validación de pipeline
 
-- [ ] Test manual: reproducir video de tráfico frente a la cámara + ruido fuerte → verificar que se genera evento en SQLite con clip.
+- [ ] Test manual: reproducir video de tráfico frente a la cámara + ruido fuerte → verificar que se genera evento en SQLite con clip y clasificación de sonido.
+- [ ] Test con sonidos no vehiculares (ladrido, sirena, herramienta) → verificar que se registra sin correlación de video.
 - [ ] Test de 1 hora continua sin crashes ni memory leaks.
 
 ---
@@ -104,15 +130,16 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 - [ ] `templates/dashboard.html`: página principal con:
   - Indicador de dB actual (polling HTMX cada 1s a `/api/current-db`)
   - Contador de eventos de hoy / esta semana
-  - Tabla de últimos 20 eventos con: timestamp, clase vehículo, dB, confianza, botón reproducir clip
+  - Tabla de últimos 20 eventos con: timestamp, categoría de sonido, clase vehículo (si aplica), dB, confianza, botón reproducir clip
   - Histograma de ruido últimas 24h (imagen generada server-side con matplotlib)
-- [ ] `templates/events.html`: tabla paginada de todos los eventos con filtros (fecha, clase, dB mínimo).
+  - Desglose por categoría de sonido (vehículo vs construcción vs animal vs otro)
+- [ ] `templates/events.html`: tabla paginada de todos los eventos con filtros (fecha, categoría sonido, clase vehículo, dB mínimo).
 - [ ] `templates/reports.html`: generación de reportes on-demand (rango de fechas, formato PDF/HTML).
 
 ### 2.3 API REST
 
 - [ ] `GET /api/current-db` → nivel dB actual (JSON)
-- [ ] `GET /api/events?limit=N&offset=M&class=X&min_db=Y` → lista de eventos
+- [ ] `GET /api/events?limit=N&offset=M&category=X&vehicle_class=Y&min_db=Z` → lista de eventos
 - [ ] `GET /api/events/{id}` → detalle de un evento
 - [ ] `GET /api/clips/{id}` → streaming del clip de video
 - [ ] `GET /api/stats?period=day|week|month` → estadísticas agregadas
@@ -146,7 +173,7 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 
 - [ ] Implementar `src/report_generator.py`:
   - Query a SQLite por rango de fechas
-  - Estadísticas: total eventos, por clase, por hora del día, por día de semana
+  - Estadísticas: total eventos, por categoría de sonido, por clase vehicular, por hora del día, por día de semana
   - Histogramas con matplotlib
   - Top-10 eventos más ruidosos con links a clips
   - Output: HTML autocontenido y/o PDF
@@ -184,7 +211,7 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 
 ## Notas para el agente
 
-- **Stack Python 3.12:** No usar pycoral ni tflite-runtime. Usar `ai-edge-litert` + `load_delegate('libedgetpu.so.1')`. Ver `scripts/test_coral.py` para ejemplo funcional.
+- **Stack Python 3.12:** No usar pycoral ni tflite-runtime. Usar `ai-edge-litert` + `load_delegate('libedgetpu.so.1')` para video (Edge TPU). YAMNet usa el mismo `ai-edge-litert` pero sin delegate (corre en CPU). Ver `scripts/test_coral.py` para ejemplo funcional de video.
 - **Sync local ↔ server:** Los docs viven localmente (Dropbox). El código ejecutable se sincroniza al server con rsync. El venv NO se sincroniza (se recrea en el server).
 - **Activar venv en server:** `cd ~/noise-monitor && source venv/bin/activate`
 - **Git:** El repo está en el directorio local del proyecto. Hacer commit después de cada fase o cambio significativo.

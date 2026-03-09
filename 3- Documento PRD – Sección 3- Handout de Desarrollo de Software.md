@@ -1,6 +1,6 @@
 ## Documento PRD – Sección 3: Handout de Desarrollo de Software
 *Responsable:* Claude
-*Versión:* 3.0 - Especificación Técnica (Mini-PC x86, cámara USB, iMM-6C, Python 3.12 + ai-edge-litert)
+*Versión:* 4.0 - Especificación Técnica (Mini-PC x86, cámara USB, iMM-6C, Python 3.12 + ai-edge-litert + YAMNet)
 
 Este documento detalla la arquitectura de software, dependencias, estructuras de datos y lógica de implementación para el desarrollador encargado de construir el sistema.
 
@@ -9,48 +9,55 @@ Este documento detalla la arquitectura de software, dependencias, estructuras de
 ### 0. Arquitectura de Datos del Sistema
 
 ```
-             ┌──────────────────────────────────┐
-             │   Lenovo ThinkCentre M910q       │
-             │   Ubuntu Server 24.04 LTS        │
-             │                                  │
-             │  ┌────────────────┐              │
-Camera ──────┼─▶│ /dev/video0    │              │
- (USB 2.0)   │  │ OpenCV capture │              │
-             │  └──────┬─────────┘              │
-             │         │ frames                 │
-             │         ▼                        │
-             │  ┌────────────────┐              │
+             ┌──────────────────────────────────────┐
+             │   Lenovo ThinkCentre M910q           │
+             │   Ubuntu Server 24.04 LTS            │
+             │                                      │
+             │  ┌────────────────┐                  │
+Camera ──────┼─▶│ /dev/video0    │                  │
+ (USB 2.0)   │  │ OpenCV capture │                  │
+             │  └──────┬─────────┘                  │
+             │         │ frames                     │
+             │         ▼                            │
+             │  ┌────────────────┐                  │
              │  │ Edge TPU       │◀── Coral (USB 3.0)
-             │  │ ai-edge-litert │              │
-             │  └──────┬─────────┘              │
-             │         │ detections             │
-             │         ▼                        │
-             │  ┌────────────────┐              │
-Mic ─────────┼─▶│ sounddevice    │              │
- (iMM-6C)   │  │ A-weighting    │              │
-             │  └──────┬─────────┘              │
-             │         │ dB levels              │
-             │         ▼                        │
-             │  ┌────────────────┐              │
-             │  │ Event Manager  │              │
-             │  │ correlación    │              │
-             │  │ audio + visión │              │
-             │  └──────┬─────────┘              │
-             │         │                        │
-             │    ┌────┴────┐                   │
-             │    ▼         ▼                   │
-             │  SQLite    clips/                │
-             │  events.db  *.mp4                │
-             │    │                             │
-             │    ▼                             │
-             │  ┌────────────────┐              │
-             │  │ FastAPI + HTMX │ ◀── Browser  │
-             │  │ :8000          │    (red local)│
-             │  │ dashboard,     │              │
-             │  │ API REST,      │              │
-             │  │ reportes       │              │
-             │  └────────────────┘              │
-             └──────────────────────────────────┘
+             │  │ ai-edge-litert │                  │
+             │  └──────┬─────────┘                  │
+             │         │ vehicle detections         │
+             │         │                            │
+             │  ┌────────────────┐                  │
+Mic ─────────┼─▶│ sounddevice    │                  │
+ (iMM-6C)   │  │ A-weighting    │                  │
+             │  └──────┬─────────┘                  │
+             │         │ dB levels                  │
+             │         ▼                            │
+             │  ┌────────────────┐                  │
+             │  │ YAMNet (CPU)   │                  │
+             │  │ audio classif. │                  │
+             │  │ 521 classes    │                  │
+             │  └──────┬─────────┘                  │
+             │         │ sound_class + category     │
+             │         ▼                            │
+             │  ┌────────────────────────┐          │
+             │  │ Event Manager          │          │
+             │  │ vehicular? → video cor.│──────┐   │
+             │  │ otro?      → directo   │      │   │
+             │  └──────┬─────────────────┘      │   │
+             │         │                        │   │
+             │    ┌────┴────┐                   │   │
+             │    ▼         ▼                   │   │
+             │  SQLite    clips/                │   │
+             │  events.db  *.mp4 ◀──────────────┘   │
+             │    │                                 │
+             │    ▼                                 │
+             │  ┌────────────────┐                  │
+             │  │ FastAPI + HTMX │ ◀── Browser      │
+             │  │ :8000          │    (red local)    │
+             │  │ dashboard,     │                  │
+             │  │ API REST,      │                  │
+             │  │ reportes       │                  │
+             │  └────────────────┘                  │
+             └──────────────────────────────────────┘
 ```
 
 ---
@@ -70,8 +77,12 @@ Hardware: Lenovo ThinkCentre M910q (i5-7500T, 8 GB RAM, 256 GB SSD)
 opencv-python-headless>=4.9.0
 numpy>=2.0.0
 
-# Inferencia (Coral Edge TPU vía ai-edge-litert + feranick/libedgetpu)
+# Inferencia visual (Coral Edge TPU vía ai-edge-litert + feranick/libedgetpu)
 ai-edge-litert>=2.1.0
+# YAMNet usa el mismo runtime (ai-edge-litert) pero corre en CPU
+
+# Clasificación de audio (YAMNet TFLite, corre en CPU)
+resampy>=0.4.0
 
 # Audio (Dayton iMM-6C vía USB, captura con sounddevice)
 sounddevice>=0.5.0
@@ -93,7 +104,9 @@ pyyaml>=6.0
 
 **Nota sobre el Coral Edge TPU:** No se usa `pycoral` ni `tflite-runtime` (oficialmente solo soportan hasta Python 3.9). Se usa `ai-edge-litert` (sucesor de tflite-runtime) con `libedgetpu` del fork [feranick/libedgetpu](https://github.com/feranick/libedgetpu), que provee `.deb` pre-compilados para Ubuntu 24.04 compatibles con TensorFlow moderno. Ver Doc 7 sección 8 para instrucciones de instalación.
 
-**Nota sobre elección de modelo:** Se usa SSD MobileNet V2 para validación inicial, con plan de migrar a EfficientDet-Lite0 (+4 puntos mAP, ~10ms vs ~3ms, ambos 100% Edge TPU). YOLO no es viable porque el Edge TPU compiler solo soporta un subconjunto de operaciones TFLite — los modelos YOLO compilan parcialmente y terminan corriendo mayormente en CPU, perdiendo la ventaja del acelerador.
+**Nota sobre elección de modelo de video:** Se usa SSD MobileNet V2 para validación inicial, con plan de migrar a EfficientDet-Lite0 (+4 puntos mAP, ~10ms vs ~3ms, ambos 100% Edge TPU). YOLO no es viable porque el Edge TPU compiler solo soporta un subconjunto de operaciones TFLite — los modelos YOLO compilan parcialmente y terminan corriendo mayormente en CPU, perdiendo la ventaja del acelerador.
+
+**Nota sobre clasificación de audio (YAMNet):** Se usa YAMNet (Google), un modelo TFLite pre-entrenado en AudioSet (521 clases de sonido ambiental). Corre en CPU (~pocos ms por ventana de 0.975s a 16kHz). Las 521 clases se agrupan en categorías propias del proyecto: `vehicle`, `construction`, `animal`, `alarm`, `human`, `other`. No requiere entrenamiento adicional. Se requiere resampleo de 44.1kHz (captura) a 16kHz (YAMNet input), manejado con `resampy`. Modelos: `models/yamnet.tflite` + `models/yamnet_labels.txt`.
 
 *Dependencias del Sistema (apt):*
 ```bash
@@ -115,6 +128,7 @@ noise-monitor/
 ├── requirements.txt         # Dependencias Python
 ├── src/
 │   ├── audio_monitor.py     # Clase para captura y análisis de audio
+│   ├── audio_classifier.py  # Clasificación de sonido con YAMNet
 │   ├── video_monitor.py     # Clase para captura y detección
 │   ├── event_manager.py     # Lógica de correlación y guardado
 │   ├── report_generator.py  # Generación de reportes (PDF/HTML)
@@ -135,7 +149,9 @@ noise-monitor/
 │   └── test_coral.py
 ├── models/
 │   ├── ssd_mobilenet_v2_coco_edgetpu.tflite
-│   └── coco_labels.txt
+│   ├── coco_labels.txt
+│   ├── yamnet.tflite          # Clasificador de audio (521 clases AudioSet)
+│   └── yamnet_labels.txt
 ├── data/
 │   ├── events.db            # SQLite (en SSD interno)
 │   └── clips/               # Videos de eventos
@@ -152,11 +168,14 @@ CREATE TABLE IF NOT EXISTS events (
     timestamp TEXT NOT NULL,           -- ISO 8601: 2026-02-08T14:30:45
     db_max REAL NOT NULL,              -- Nivel máximo ponderado A
     db_avg REAL,                       -- Nivel promedio en ventana
-    vehicle_class TEXT,                -- 'motorcycle', 'car', 'truck', 'bus', 'unknown'
+    sound_class TEXT,                  -- Clase YAMNet raw: 'Jackhammer', 'Dog', 'Vehicle', etc.
+    sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
+    sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
+    vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
     lane TEXT,                         -- 'left', 'right', 'both', 'none'
-    confidence TEXT,                   -- 'high', 'medium', 'low'
+    confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
     speed_estimate REAL,               -- km/h estimados (nullable)
-    clip_path TEXT,                    -- Ruta relativa al video
+    clip_path TEXT,                    -- Ruta relativa al clip
     duration_ms INTEGER,               -- Duración del clip en ms
     trigger_type TEXT,                 -- 'peak', 'sustained', 'correlation'
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -164,6 +183,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX idx_timestamp ON events(timestamp);
 CREATE INDEX idx_vehicle ON events(vehicle_class);
+CREATE INDEX idx_sound_category ON events(sound_category);
 CREATE INDEX idx_db ON events(db_max);
 ```
 
@@ -219,7 +239,50 @@ web:
   host: 0.0.0.0
   port: 8000
 
-# Jerarquía de ruido para inferencia
+# Clasificador de audio (YAMNet)
+audio_classifier:
+  model_path: models/yamnet.tflite
+  labels_path: models/yamnet_labels.txt
+  min_score: 0.3                    # Score mínimo para aceptar clasificación
+  category_map:                     # Mapeo de clases AudioSet → categoría propia
+    vehicle:
+      - Vehicle
+      - Car
+      - Truck
+      - Motorcycle
+      - Bus
+      - Engine
+      - Accelerating, revving, vroom
+      - Tire squeal
+      - Car horn, honking
+    construction:
+      - Jackhammer
+      - Chainsaw
+      - Power tool
+      - Drill
+      - Sawing
+      - Hammer
+    animal:
+      - Dog
+      - Bark
+      - Cat
+      - Bird
+      - Rooster
+    alarm:
+      - Siren
+      - Alarm
+      - Emergency vehicle
+      - Buzzer
+      - Fire alarm
+      - Smoke detector
+    human:
+      - Speech
+      - Shout
+      - Screaming
+      - Music
+      - Singing
+
+# Jerarquía de ruido para inferencia visual
 noise_priority:
   truck: 1
   bus: 1
@@ -235,7 +298,8 @@ noise_priority:
 
 ```python
 """
-Arquitectura de dos hilos con buffers circulares compartidos.
+Arquitectura multi-hilo con buffers circulares compartidos.
+Incluye clasificación de audio (YAMNet) y correlación visual condicional.
 """
 
 import threading
@@ -273,12 +337,14 @@ def audio_thread():
         
         # Evaluar triggers
         if db >= PEAK_THRESHOLD:
-            event_queue.put(('peak', db, time.inputBufferAdcTime))
+            sound_class, sound_cat, score = audio_classifier.classify(indata, source_sr=SAMPLE_RATE)
+            event_queue.put(('peak', db, time.inputBufferAdcTime, sound_class, sound_cat, score))
             sustained_counter = 0
         elif db >= SUSTAINED_THRESHOLD:
             sustained_counter += 1
             if sustained_counter >= SUSTAINED_BLOCKS:
-                event_queue.put(('sustained', db, time.inputBufferAdcTime))
+                sound_class, sound_cat, score = audio_classifier.classify(indata, source_sr=SAMPLE_RATE)
+                event_queue.put(('sustained', db, time.inputBufferAdcTime, sound_class, sound_cat, score))
                 sustained_counter = 0
         else:
             sustained_counter = max(0, sustained_counter - 1)
@@ -330,25 +396,29 @@ def video_thread():
         
         # Verificar si hay evento pendiente
         if not event_queue.empty():
-            trigger_type, db, audio_ts = event_queue.get()
+            trigger_type, db, audio_ts, sound_class, sound_category, sound_score = event_queue.get()
             
-            # Verificar correlación visual
-            vehicles = [d for d in recent_detections if d['class'] in VEHICLE_CLASSES]
-            
-            if vehicles or db >= PEAK_THRESHOLD:
-                # Determinar culpable por jerarquía
+            if sound_category == 'vehicle':
+                # Correlación visual: confirmar con detecciones de video
+                vehicles = [d for d in recent_detections if d['class'] in VEHICLE_CLASSES]
                 culprit = assign_culprit(vehicles)
                 confidence = calculate_confidence(vehicles)
-                
-                # Guardar clip
-                save_event(
-                    audio_buffer, video_buffer,
-                    timestamp=audio_ts,
-                    db_max=db,
-                    vehicle=culprit,
-                    confidence=confidence,
-                    trigger_type=trigger_type
-                )
+            else:
+                # Sonido no vehicular: registrar directo sin correlación visual
+                culprit = None
+                confidence = 'n/a'
+            
+            save_event(
+                audio_buffer, video_buffer,
+                timestamp=audio_ts,
+                db_max=db,
+                sound_class=sound_class,
+                sound_category=sound_category,
+                sound_confidence=sound_score,
+                vehicle=culprit,
+                confidence=confidence,
+                trigger_type=trigger_type
+            )
 
 # --- MAIN ---
 if __name__ == '__main__':
@@ -445,7 +515,77 @@ def calculate_confidence(detections):
 
 ---
 
-### 8. Script de Calibración (calibrate.py)
+### 8. Clasificación de Audio (audio_classifier.py)
+
+```python
+import numpy as np
+from ai_edge_litert.interpreter import Interpreter
+import resampy
+
+YAMNET_SAMPLE_RATE = 16000
+
+class AudioClassifier:
+    """
+    Clasifica sonidos usando YAMNet (521 clases AudioSet).
+    Input: ventana de audio a cualquier sample rate.
+    Output: (sound_class, sound_category, score).
+    """
+    def __init__(self, model_path, labels_path, category_map, min_score=0.3):
+        self.interpreter = Interpreter(model_path=model_path)
+        self.interpreter.allocate_tensors()
+        self.labels = self._load_labels(labels_path)
+        self.category_map = category_map
+        self.min_score = min_score
+        self._build_reverse_map()
+
+    def _build_reverse_map(self):
+        """Construye mapeo inverso: nombre clase → categoría."""
+        self.class_to_category = {}
+        for category, class_names in self.category_map.items():
+            for name in class_names:
+                self.class_to_category[name.lower()] = category
+
+    def classify(self, audio_window, source_sr=44100):
+        """
+        Clasifica una ventana de audio.
+        Resamplea a 16kHz si es necesario.
+        Retorna (sound_class, sound_category, score).
+        """
+        if source_sr != YAMNET_SAMPLE_RATE:
+            audio = resampy.resample(audio_window, source_sr, YAMNET_SAMPLE_RATE)
+        else:
+            audio = audio_window
+
+        audio = audio.astype(np.float32)
+
+        input_details = self.interpreter.get_input_details()
+        output_details = self.interpreter.get_output_details()
+        self.interpreter.resize_tensor_input(input_details[0]['index'], audio.shape)
+        self.interpreter.allocate_tensors()
+        self.interpreter.set_tensor(input_details[0]['index'], audio)
+        self.interpreter.invoke()
+
+        scores = self.interpreter.get_tensor(output_details[0]['index'])
+        top_idx = np.argmax(scores)
+        top_score = scores.flat[top_idx]
+        sound_class = self.labels[top_idx]
+
+        if top_score < self.min_score:
+            return ('unknown', 'other', top_score)
+
+        category = self._lookup_category(sound_class)
+        return (sound_class, category, float(top_score))
+
+    def _lookup_category(self, class_name):
+        for label_fragment, cat in self.class_to_category.items():
+            if label_fragment in class_name.lower():
+                return cat
+        return 'other'
+```
+
+---
+
+### 9. Script de Calibración (calibrate.py)
 
 ```python
 """
@@ -488,7 +628,7 @@ if __name__ == '__main__':
 
 ---
 
-### 9. Notas de Implementación
+### 10. Notas de Implementación
 
 1. *Threading vs Asyncio:* Se recomienda `threading` por simplicidad y porque `sounddevice` usa callbacks síncronos. `asyncio` añadiría complejidad sin beneficio real aquí.
 
