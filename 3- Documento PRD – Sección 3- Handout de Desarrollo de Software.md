@@ -9,55 +9,65 @@ Este documento detalla la arquitectura de software, dependencias, estructuras de
 ### 0. Arquitectura de Datos del Sistema
 
 ```
-             ┌──────────────────────────────────────┐
-             │   Lenovo ThinkCentre M910q           │
-             │   Ubuntu Server 24.04 LTS            │
-             │                                      │
-             │  ┌────────────────┐                  │
-Camera ──────┼─▶│ /dev/video0    │                  │
- (USB 2.0)   │  │ OpenCV capture │                  │
-             │  └──────┬─────────┘                  │
-             │         │ frames                     │
-             │         ▼                            │
-             │  ┌────────────────┐                  │
-             │  │ Edge TPU       │◀── Coral (USB 3.0)
-             │  │ ai-edge-litert │                  │
-             │  └──────┬─────────┘                  │
-             │         │ vehicle detections         │
-             │         │                            │
-             │  ┌────────────────┐                  │
-Mic ─────────┼─▶│ sounddevice    │                  │
- (iMM-6C)   │  │ A-weighting    │                  │
-             │  └──────┬─────────┘                  │
-             │         │ dB levels                  │
-             │         ▼                            │
-             │  ┌────────────────┐                  │
-             │  │ YAMNet (CPU)   │                  │
-             │  │ audio classif. │                  │
-             │  │ 521 classes    │                  │
-             │  └──────┬─────────┘                  │
-             │         │ sound_class + category     │
-             │         ▼                            │
-             │  ┌────────────────────────┐          │
-             │  │ Event Manager          │          │
-             │  │ vehicular? → video cor.│──────┐   │
-             │  │ otro?      → directo   │      │   │
-             │  └──────┬─────────────────┘      │   │
-             │         │                        │   │
-             │    ┌────┴────┐                   │   │
-             │    ▼         ▼                   │   │
-             │  SQLite    clips/                │   │
-             │  events.db  *.mp4 ◀──────────────┘   │
-             │    │                                 │
-             │    ▼                                 │
-             │  ┌────────────────┐                  │
-             │  │ FastAPI + HTMX │ ◀── Browser      │
-             │  │ :8000          │    (red local)    │
-             │  │ dashboard,     │                  │
-             │  │ API REST,      │                  │
-             │  │ reportes       │                  │
-             │  └────────────────┘                  │
-             └──────────────────────────────────────┘
+             ┌───────────────────────────────────────────┐
+             │   Lenovo ThinkCentre M910q                │
+             │   Ubuntu Server 24.04 LTS                 │
+             │                                           │
+             │  ┌────────────────┐                       │
+Camera ──────┼─▶│ /dev/video0    │                       │
+ (USB 2.0)   │  │ OpenCV capture │                       │
+             │  └──────┬─────────┘                       │
+             │         │ frames                          │
+             │         ▼                                 │
+             │  ┌────────────────┐                       │
+             │  │ Edge TPU       │◀── Coral (USB 3.0)    │
+             │  │ ai-edge-litert │                       │
+             │  └──────┬─────────┘                       │
+             │         │ vehicle detections              │
+             │         ├──────────────────┐              │
+             │         │                  ▼              │
+             │         │  ┌───────────────────────┐      │
+             │         │  │ CentroidTracker       │      │
+             │         │  │ (registro continuo)   │      │
+             │         │  │ filtros: min_track_s,  │      │
+             │         │  │   min_displacement    │      │
+             │         │  └──────┬────────────────┘      │
+             │         │         │ passage_queue          │
+             │         │         ▼                       │
+             │  ┌────────────────┐                       │
+Mic ─────────┼─▶│ sounddevice    │                       │
+ (iMM-6C)   │  │ A-weighting    │                       │
+             │  └──────┬─────────┘                       │
+             │         │ dB levels + trigger             │
+             │         ▼                                 │
+             │  ┌────────────────┐                       │
+             │  │ YAMNet (CPU)   │                       │
+             │  │ audio classif. │                       │
+             │  │ 521 classes    │                       │
+             │  └──────┬─────────┘                       │
+             │         │ trigger_queue                   │
+             │         ▼                                 │
+             │  ┌────────────────────────────────┐       │
+             │  │ Event Manager (2 colas)        │       │
+             │  │ passage_queue → vehicle_passages│       │
+             │  │ trigger_queue → noise_events   │──┐    │
+             │  │ + correlación cruzada          │  │    │
+             │  └──────┬─────────────────────────┘  │    │
+             │         │                            │    │
+             │    ┌────┴────┐                       │    │
+             │    ▼         ▼                       │    │
+             │  SQLite    clips/                    │    │
+             │  events.db  *.mp4 ◀──────────────────┘    │
+             │    │                                      │
+             │    ▼                                      │
+             │  ┌────────────────┐                       │
+             │  │ FastAPI + HTMX │ ◀── Browser           │
+             │  │ :8000          │    (red local)         │
+             │  │ dashboard,     │                       │
+             │  │ API REST,      │                       │
+             │  │ reportes       │                       │
+             │  └────────────────┘                       │
+             └───────────────────────────────────────────┘
 ```
 
 ---
@@ -130,7 +140,8 @@ noise-monitor/
 │   ├── audio_monitor.py     # Clase para captura y análisis de audio
 │   ├── audio_classifier.py  # Clasificación de sonido con YAMNet
 │   ├── video_monitor.py     # Clase para captura y detección
-│   ├── event_manager.py     # Lógica de correlación y guardado
+│   ├── vehicle_tracker.py   # CentroidTracker: registro continuo de vehículos
+│   ├── event_manager.py     # Correlación, guardado, consumo de 2 colas
 │   ├── report_generator.py  # Generación de reportes (PDF/HTML)
 │   └── utils.py             # Filtro A-weighting, helpers
 ├── web/
@@ -153,7 +164,7 @@ noise-monitor/
 │   ├── yamnet.tflite          # Clasificador de audio (521 clases AudioSet)
 │   └── yamnet_labels.txt
 ├── data/
-│   ├── events.db            # SQLite (en SSD interno)
+│   ├── events.db            # SQLite (tablas: vehicle_passages + noise_events)
 │   └── clips/               # Videos de eventos
 └── reports/                 # PDFs/HTMLs generados
 ```
@@ -162,30 +173,45 @@ noise-monitor/
 
 ### 3. Esquema de Base de Datos (schema.sql)
 
+El sistema usa dos tablas: `vehicle_passages` registra **todos** los vehículos detectados por el tracker (independientemente del ruido), y `noise_events` registra los eventos de ruido con clip y clasificación YAMNet. Ambas se cruzan opcionalmente vía FK.
+
 ```sql
-CREATE TABLE IF NOT EXISTS events (
+-- Registro continuo de vehículos detectados por el CentroidTracker
+CREATE TABLE IF NOT EXISTS vehicle_passages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601: 2026-02-08T14:30:45
+    timestamp TEXT NOT NULL,           -- ISO 8601 del momento en que el vehículo entró al cuadro
+    timestamp_exit TEXT,               -- ISO 8601 cuando salió del cuadro
+    vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
+    lane TEXT,                         -- 'left', 'right'
+    detection_score REAL,              -- Score promedio del modelo durante el tracking
+    db_at_time REAL,                   -- dB(A) al momento de la detección
+    noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (noise_event_id) REFERENCES noise_events(id)
+);
+
+-- Eventos de ruido (vehiculares y no vehiculares) con clip de audio/video
+CREATE TABLE IF NOT EXISTS noise_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,           -- ISO 8601
     db_max REAL NOT NULL,              -- Nivel máximo ponderado A
     db_avg REAL,                       -- Nivel promedio en ventana
-    sound_class TEXT,                  -- Clase YAMNet raw: 'Jackhammer', 'Dog', 'Vehicle', etc.
+    trigger_type TEXT,                 -- 'peak', 'sustained'
+    sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
     sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
     sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
     vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
     lane TEXT,                         -- 'left', 'right', 'both', 'none'
     confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
-    speed_estimate REAL,               -- km/h estimados (nullable)
+    passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
     clip_path TEXT,                    -- Ruta relativa al clip
     duration_ms INTEGER,               -- Duración del clip en ms
-    trigger_type TEXT,                 -- 'peak', 'sustained', 'correlation'
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
 );
-
-CREATE INDEX idx_timestamp ON events(timestamp);
-CREATE INDEX idx_vehicle ON events(vehicle_class);
-CREATE INDEX idx_sound_category ON events(sound_category);
-CREATE INDEX idx_db ON events(db_max);
 ```
+
+**Nota sobre migración:** Si existía la tabla `events` (v1), `schema.sql` incluye un `INSERT OR IGNORE` para migrar datos a `noise_events`.
 
 ---
 
@@ -238,6 +264,13 @@ paths:
 web:
   host: 0.0.0.0
   port: 8000
+
+# Centroid tracker para registro continuo de vehículos
+tracker:
+  max_distance: 80          # px, distancia máxima entre centroides para match
+  max_disappeared: 20       # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
+  min_track_seconds: 2.0    # duración mínima para contar como pasaje real (filtra flickering)
+  min_displacement: 60      # px, desplazamiento mínimo del centroide para contar (filtra estacionados)
 
 # Clasificador de audio (YAMNet)
 audio_classifier:
@@ -298,138 +331,55 @@ noise_priority:
 
 ```python
 """
-Arquitectura multi-hilo con buffers circulares compartidos.
-Incluye clasificación de audio (YAMNet) y correlación visual condicional.
+Arquitectura multi-hilo con buffers circulares, tracking continuo de
+vehículos (CentroidTracker) y clasificación de audio (YAMNet).
+EventManager consume 2 colas: passage_queue y trigger_queue.
 """
 
 import threading
-from collections import deque
 from queue import Queue
 
-# Buffers compartidos (thread-safe con locks)
-audio_buffer = deque(maxlen=AUDIO_BUFFER_SIZE)
-video_buffer = deque(maxlen=VIDEO_BUFFER_SIZE)
-event_queue = Queue()  # Comunicación entre hilos
+# --- COMPONENTES ---
+# AudioClassifier: carga YAMNet, clasifica ~1s de audio → (class, category, score)
+# AudioMonitor: captura audio, A-weighting, dB, triggers → trigger_queue
+#               Si trigger: clasifica con YAMNet antes de encolar
+# VideoMonitor: captura video, inferencia Edge TPU cada N frames
+#               CentroidTracker actualiza en cada inferencia → passage_queue
+# EventManager: consume 2 colas en paralelo:
+#   - passage_queue → INSERT en vehicle_passages (registro continuo)
+#   - trigger_queue → INSERT en noise_events + guardar clip + correlacionar
 
-# --- HILO DE AUDIO ---
-def audio_thread():
-    """
-    1. Captura continua con sounddevice
-    2. Aplica filtro A-weighting (scipy.signal)
-    3. Calcula RMS -> dB
-    4. Evalúa condiciones de trigger
-    5. Si trigger, encola pre-evento
-    """
-    sustained_counter = 0
-    
-    def audio_callback(indata, frames, time, status):
-        nonlocal sustained_counter
-        
-        # Filtro A-weighting
-        filtered = apply_a_weighting(indata)
-        
-        # Calcular dB
-        rms = np.sqrt(np.mean(filtered*_2))
-        db = 20 _ np.log10(rms / REF_PRESSURE) + CALIBRATION_OFFSET
-        
-        # Guardar en buffer con timestamp
-        audio_buffer.append((time.inputBufferAdcTime, db, indata.copy()))
-        
-        # Evaluar triggers
-        if db >= PEAK_THRESHOLD:
-            sound_class, sound_cat, score = audio_classifier.classify(indata, source_sr=SAMPLE_RATE)
-            event_queue.put(('peak', db, time.inputBufferAdcTime, sound_class, sound_cat, score))
-            sustained_counter = 0
-        elif db >= SUSTAINED_THRESHOLD:
-            sustained_counter += 1
-            if sustained_counter >= SUSTAINED_BLOCKS:
-                sound_class, sound_cat, score = audio_classifier.classify(indata, source_sr=SAMPLE_RATE)
-                event_queue.put(('sustained', db, time.inputBufferAdcTime, sound_class, sound_cat, score))
-                sustained_counter = 0
-        else:
-            sustained_counter = max(0, sustained_counter - 1)
-    
-    with sd.InputStream(callback=audio_callback, ...):
-        while running:
-            time.sleep(0.1)
-
-# --- HILO DE VIDEO ---
-def video_thread():
-    """
-    1. Captura continua con OpenCV (cámara USB vía V4L2)
-    2. Cada N frames, ejecuta inferencia con Coral
-    3. Mantiene buffer circular de frames + detecciones
-    4. Escucha event_queue para confirmar y guardar eventos
-    """
-    import cv2
-    from ai_edge_litert.interpreter import Interpreter, load_delegate
-    
-    cap = cv2.VideoCapture(config['video']['source'])
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config['video']['resolution'][0])
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config['video']['resolution'][1])
-    cap.set(cv2.CAP_PROP_FPS, config['video']['framerate'])
-    
-    delegate = load_delegate('libedgetpu.so.1', options={'device': 'usb'})
-    interpreter = Interpreter(
-        model_path='models/ssd_mobilenet_v2_coco_edgetpu.tflite',
-        experimental_delegates=[delegate]
-    )
-    interpreter.allocate_tensors()
-    
-    frame_count = 0
-    recent_detections = []
-    
-    while running:
-        ret, frame = cap.read()
-        if not ret:
-            continue
-        timestamp = time.time()
-        
-        # Guardar en buffer
-        video_buffer.append((timestamp, frame))
-        
-        # Inferencia cada N frames
-        frame_count += 1
-        if frame_count % INFERENCE_INTERVAL == 0:
-            detections = run_inference(interpreter, frame)
-            recent_detections = detections
-        
-        # Verificar si hay evento pendiente
-        if not event_queue.empty():
-            trigger_type, db, audio_ts, sound_class, sound_category, sound_score = event_queue.get()
-            
-            if sound_category == 'vehicle':
-                # Correlación visual: confirmar con detecciones de video
-                vehicles = [d for d in recent_detections if d['class'] in VEHICLE_CLASSES]
-                culprit = assign_culprit(vehicles)
-                confidence = calculate_confidence(vehicles)
-            else:
-                # Sonido no vehicular: registrar directo sin correlación visual
-                culprit = None
-                confidence = 'n/a'
-            
-            save_event(
-                audio_buffer, video_buffer,
-                timestamp=audio_ts,
-                db_max=db,
-                sound_class=sound_class,
-                sound_category=sound_category,
-                sound_confidence=sound_score,
-                vehicle=culprit,
-                confidence=confidence,
-                trigger_type=trigger_type
-            )
+# --- FLUJO DE DATOS ---
+# 1. VideoMonitor captura frames y corre inferencia cada N frames
+# 2. CentroidTracker recibe detecciones, rastrea centroides en px
+# 3. Cuando un vehículo "sale" del cuadro (max_disappeared frames sin verlo):
+#    - Si duration >= min_track_seconds Y displacement >= min_displacement:
+#      → emite pasaje a passage_queue
+#    - Si no: descartado (flickering o vehículo estacionado)
+# 4. AudioMonitor detecta triggers (peak/sustained)
+# 5. Si trigger: clasifica ~1s de audio con YAMNet → encola en trigger_queue
+# 6. EventManager._passage_loop() → consume passage_queue → vehicle_passages
+# 7. EventManager._trigger_loop() → consume trigger_queue → noise_events
+#    - Si vehicular: busca passage reciente del mismo tipo para correlacionar
+#    - Guarda clip ±5s de buffers de audio y video
 
 # --- MAIN ---
 if __name__ == '__main__':
-    load_config('config.yaml')
+    config = load_config('config.yaml')
     init_database()
     
-    t_audio = threading.Thread(target=audio_thread, daemon=True)
-    t_video = threading.Thread(target=video_thread, daemon=True)
+    classifier = AudioClassifier(...)  # YAMNet (graceful fallback si no hay modelo)
+    audio = AudioMonitor(config, audio_classifier=classifier)
+    video = VideoMonitor(config)  # incluye CentroidTracker
+    event_mgr = EventManager(audio, video, config)
     
-    t_audio.start()
-    t_video.start()
+    t_audio = threading.Thread(target=audio.run, daemon=True)
+    t_video = threading.Thread(target=video.run, daemon=True)
+    t_event = threading.Thread(target=event_mgr.run, daemon=True)
+    # event_mgr.run() arranca internamente _passage_loop en thread separado
+    
+    for t in [t_audio, t_video, t_event]:
+        t.start()
     
     # Mantener vivo hasta Ctrl+C
     try:
@@ -523,64 +473,102 @@ from ai_edge_litert.interpreter import Interpreter
 import resampy
 
 YAMNET_SAMPLE_RATE = 16000
+YAMNET_EXPECTED_SAMPLES = 15600  # ~0.975s @ 16kHz — tamaño fijo del modelo
 
 class AudioClassifier:
     """
     Clasifica sonidos usando YAMNet (521 clases AudioSet).
     Input: ventana de audio a cualquier sample rate.
     Output: (sound_class, sound_category, score).
+    
+    IMPORTANTE: YAMNet espera exactamente 15600 samples a 16kHz.
+    El interpreter se pre-aloca con ese tamaño fijo en __init__
+    para evitar errores de reshape con XNNPACK delegate.
     """
     def __init__(self, model_path, labels_path, category_map, min_score=0.3):
         self.interpreter = Interpreter(model_path=model_path)
+        input_details = self.interpreter.get_input_details()
+        output_details = self.interpreter.get_output_details()
+        self._input_index = input_details[0]["index"]
+        self._output_index = output_details[0]["index"]
+        # Pre-alocar con tamaño fijo (no redimensionar en cada classify)
+        self.interpreter.resize_tensor_input(self._input_index, [YAMNET_EXPECTED_SAMPLES])
         self.interpreter.allocate_tensors()
         self.labels = self._load_labels(labels_path)
         self.category_map = category_map
         self.min_score = min_score
         self._build_reverse_map()
 
-    def _build_reverse_map(self):
-        """Construye mapeo inverso: nombre clase → categoría."""
-        self.class_to_category = {}
-        for category, class_names in self.category_map.items():
-            for name in class_names:
-                self.class_to_category[name.lower()] = category
-
     def classify(self, audio_window, source_sr=44100):
         """
         Clasifica una ventana de audio.
-        Resamplea a 16kHz si es necesario.
-        Retorna (sound_class, sound_category, score).
+        Resamplea a 16kHz y pad/trunca a 15600 samples.
         """
         if source_sr != YAMNET_SAMPLE_RATE:
             audio = resampy.resample(audio_window, source_sr, YAMNET_SAMPLE_RATE)
         else:
             audio = audio_window
-
         audio = audio.astype(np.float32)
 
-        input_details = self.interpreter.get_input_details()
-        output_details = self.interpreter.get_output_details()
-        self.interpreter.resize_tensor_input(input_details[0]['index'], audio.shape)
-        self.interpreter.allocate_tensors()
-        self.interpreter.set_tensor(input_details[0]['index'], audio)
+        # Pad o truncar a exactamente 15600 samples
+        if len(audio) > YAMNET_EXPECTED_SAMPLES:
+            audio = audio[-YAMNET_EXPECTED_SAMPLES:]
+        elif len(audio) < YAMNET_EXPECTED_SAMPLES:
+            audio = np.pad(audio, (YAMNET_EXPECTED_SAMPLES - len(audio), 0))
+
+        self.interpreter.set_tensor(self._input_index, audio)
         self.interpreter.invoke()
 
-        scores = self.interpreter.get_tensor(output_details[0]['index'])
+        scores = self.interpreter.get_tensor(self._output_index)
+        # YAMNet puede retornar (patches, 521) — promediar patches
+        if scores.ndim > 1:
+            scores = scores.mean(axis=0)
+
         top_idx = np.argmax(scores)
-        top_score = scores.flat[top_idx]
+        top_score = float(scores[top_idx])
         sound_class = self.labels[top_idx]
 
         if top_score < self.min_score:
             return ('unknown', 'other', top_score)
 
         category = self._lookup_category(sound_class)
-        return (sound_class, category, float(top_score))
+        return (sound_class, category, top_score)
+```
 
-    def _lookup_category(self, class_name):
-        for label_fragment, cat in self.class_to_category.items():
-            if label_fragment in class_name.lower():
-                return cat
-        return 'other'
+### 8b. Tracking Continuo de Vehículos (vehicle_tracker.py)
+
+```python
+class CentroidTracker:
+    """
+    Rastrea vehículos entre frames usando distancia euclidiana de centroides
+    en coordenadas de píxel. Cada vez que un objeto "sale" del cuadro
+    (no se ve durante max_disappeared frames de inferencia), se emite un
+    pasaje en passage_queue.
+    
+    Filtros para evitar falsos positivos:
+    - min_track_seconds: descarta tracks de duración menor (flickering del modelo)
+    - min_displacement: descarta objetos cuyo centroide no se movió lo suficiente
+      (vehículos estacionados que el modelo detecta de forma intermitente)
+    """
+    def __init__(self, max_distance=80.0, max_disappeared=20,
+                 min_track_seconds=2.0, min_displacement=60.0,
+                 passage_queue=None):
+        # max_distance: px máximos entre centroides para considerar match
+        # max_disappeared: frames de inferencia sin ver antes de deregistrar
+        # min_track_seconds: duración mínima para emitir pasaje
+        # min_displacement: px mínimos de desplazamiento start→end
+
+    def update(self, detections, timestamp):
+        """Recibe lista de detecciones del frame actual, actualiza tracking."""
+        # Filtra solo clases vehiculares
+        # Matching húngaro por distancia euclidiana de centroides
+        # Registra nuevos, actualiza existentes, incrementa disappeared
+
+    def _deregister(self, object_id):
+        """Deregistra un objeto. Si pasó los filtros, emite pasaje a la cola."""
+        # 1. Verificar duration >= min_track_seconds
+        # 2. Verificar displacement >= min_displacement (parked filter)
+        # 3. Si pasa ambos: passage_queue.put({...})
 ```
 
 ---
@@ -634,7 +622,11 @@ if __name__ == '__main__':
 
 2. *SSD interno:* El ThinkCentre M910q tiene SSD de 256 GB integrado. No se necesita montaje externo. Los datos se almacenan en `~/noise-monitor/data/`.
 
-3. *Dashboard web (FastAPI + HTMX):* Se ejecuta como parte del proceso principal (`main.py` arranca uvicorn en un hilo). No requiere proxy reverso para uso en red local. Funcionalidades:
+3. *CentroidTracker — coordenadas y filtros:* El tracker opera en **coordenadas de píxel** (no normalizadas 0-1). Las detecciones del modelo COCO se convierten a centroides en px antes de pasarlas al tracker. Dos filtros evitan falsos positivos: `min_track_seconds` (descarta flickering del modelo) y `min_displacement` (descarta vehículos estacionados cuyo centroide no se desplaza entre primera y última detección).
+
+4. *YAMNet — tamaño de input fijo:* El modelo espera exactamente 15600 samples (0.975s @ 16kHz). El interpreter se pre-aloca una sola vez en `__init__` con ese tamaño. Cada ventana de audio se pad/trunca a 15600 samples antes de la inferencia. Esto evita errores con el delegate XNNPACK que no soporta reshape dinámico.
+
+5. *Dashboard web (FastAPI + HTMX):* Se ejecuta como parte del proceso principal (`main.py` arranca uvicorn en un hilo). No requiere proxy reverso para uso en red local. Funcionalidades:
    - Nivel de dB en tiempo real (polling cada 1s vía HTMX)
    - Tabla de eventos recientes con reproducción de clips
    - Histogramas por hora/día (matplotlib renderizado server-side)

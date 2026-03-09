@@ -1,0 +1,30 @@
+# Ejemplo de config para modo simulado (Fase 0.5)
+# Copiar a config.yaml o fusionar las secciones relevantes
+#
+# 1. Descargar video: ./scripts/download_test_videos.sh "URL_YOUTUBE"
+# 2. Extraer audio: ./scripts/extract_audio_from_video.sh data/test_videos/traffic_xxx.mp4
+# 3. Descargar YAMNet: ./scripts/download_yamnet.sh
+# 4. Activar modo simulado abajo
+
+video:
+  source: "data/test_videos/traffic_xxx.mp4"  # ruta al video descargado
+  resolution: [1920, 1080]
+  framerate: 30
+  inference_interval: 5
+  detection_threshold: 0.5
+
+tracker:
+  max_distance: 80          # px, distancia máxima entre centroides para match
+  max_disappeared: 20       # inference frames sin ver antes de marcar como salido
+  min_track_seconds: 2.0    # duración mínima para contar como pasaje real
+  min_displacement: 60      # px, desplazamiento mínimo para filtrar estacionados
+
+audio_classifier:
+  model_path: models/yamnet.tflite
+  labels_path: models/yamnet_labels.txt
+  min_score: 0.3
+
+debug:
+  simulate: true
+  loop_video: true
+  audio_from_video: true   # usa traffic_xxx_audio.wav (derivado del path del video)

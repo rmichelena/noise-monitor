@@ -1,21 +1,52 @@
--- Schema para el sistema de monitoreo de ruido vehicular
+-- Schema para el sistema de monitoreo de ruido urbano v2
 -- Ejecutar: sqlite3 data/events.db < schema.sql
+--
+-- Dos tablas principales:
+--   vehicle_passages: registro continuo de cada vehículo que cruza el cuadro (tracker)
+--   noise_events: eventos de ruido con clip (vehicular y no vehicular)
 
-CREATE TABLE IF NOT EXISTS events (
+-- Registro continuo de vehículos detectados por el tracker
+CREATE TABLE IF NOT EXISTS vehicle_passages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601: 2026-02-08T14:30:45
-    db_max REAL NOT NULL,             -- Nivel máximo ponderado A
-    db_avg REAL,                      -- Nivel promedio en ventana
-    vehicle_class TEXT,               -- 'motorcycle', 'car', 'truck', 'bus', 'unknown'
-    lane TEXT,                        -- 'left', 'right', 'both', 'none'
-    confidence TEXT,                  -- 'high', 'medium', 'low'
-    speed_estimate REAL,             -- km/h estimados (nullable)
-    clip_path TEXT,                   -- Ruta relativa al video
-    duration_ms INTEGER,              -- Duración del clip en ms
-    trigger_type TEXT,                -- 'peak', 'sustained', 'correlation'
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    timestamp TEXT NOT NULL,           -- ISO 8601 del momento en que el vehículo entró al cuadro
+    timestamp_exit TEXT,               -- ISO 8601 cuando salió del cuadro
+    vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
+    lane TEXT,                         -- 'left', 'right'
+    detection_score REAL,              -- Score promedio del modelo durante el tracking
+    db_at_time REAL,                   -- dB(A) al momento de la detección
+    noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (noise_event_id) REFERENCES noise_events(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_vehicle ON events(vehicle_class);
-CREATE INDEX IF NOT EXISTS idx_db ON events(db_max);
+-- Eventos de ruido (vehiculares y no vehiculares) con clip de audio/video
+CREATE TABLE IF NOT EXISTS noise_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,           -- ISO 8601
+    db_max REAL NOT NULL,              -- Nivel máximo ponderado A
+    db_avg REAL,                       -- Nivel promedio en ventana
+    trigger_type TEXT,                 -- 'peak', 'sustained'
+    sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
+    sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
+    sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
+    vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
+    lane TEXT,                         -- 'left', 'right', 'both', 'none'
+    confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
+    passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
+    clip_path TEXT,                    -- Ruta relativa al clip
+    duration_ms INTEGER,               -- Duración del clip en ms
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);
+CREATE INDEX IF NOT EXISTS idx_ne_timestamp ON noise_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_ne_sound_category ON noise_events(sound_category);
+CREATE INDEX IF NOT EXISTS idx_ne_vehicle_class ON noise_events(vehicle_class);
+CREATE INDEX IF NOT EXISTS idx_ne_db ON noise_events(db_max);
+
+-- Migrar datos de la tabla vieja si existe
+INSERT OR IGNORE INTO noise_events (id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms)
+    SELECT id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms
+    FROM events WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='events');

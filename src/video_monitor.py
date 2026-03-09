@@ -1,6 +1,7 @@
 """
 Monitor de video: captura continua, inferencia con Coral Edge TPU.
 Mantiene buffer circular de frames y detecciones recientes para correlación.
+Integra CentroidTracker para registrar pasajes de vehículos.
 """
 
 import logging
@@ -9,12 +10,14 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from queue import Queue
 
 import cv2
 import numpy as np
 from ai_edge_litert.interpreter import Interpreter, load_delegate
 
 from .utils import load_config
+from .vehicle_tracker import CentroidTracker
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +47,16 @@ class VideoMonitor:
         video_cfg = self.config["video"]
         buffer_cfg = self.config["buffer"]
 
-        self.source = video_cfg.get("source", 0)
+        raw_source = video_cfg.get("source", 0)
+        # source: int = dispositivo USB, str = ruta a archivo de video
+        if isinstance(raw_source, str):
+            path = Path(raw_source)
+            if not path.is_absolute():
+                path = self.base_dir / path
+            self.source = str(path.resolve())
+        else:
+            self.source = raw_source
+
         self.resolution = tuple(video_cfg["resolution"])
         self.framerate = int(video_cfg["framerate"])
         self.inference_interval = int(video_cfg["inference_interval"])
@@ -70,6 +82,22 @@ class VideoMonitor:
         self._running = False
         self._cap: cv2.VideoCapture | None = None
         self._frame_count = 0
+
+        # Modo simulado: loop cuando el video termina
+        debug_cfg = self.config.get("debug", {})
+        self._loop_video = bool(debug_cfg.get("loop_video", True))
+        self._is_file_source = isinstance(raw_source, str)
+
+        # Centroid tracker
+        tracker_cfg = self.config.get("tracker", {})
+        self.passage_queue: Queue = Queue()
+        self._tracker = CentroidTracker(
+            max_distance=float(tracker_cfg.get("max_distance", 80)),
+            max_disappeared=int(tracker_cfg.get("max_disappeared", 20)),
+            min_track_seconds=float(tracker_cfg.get("min_track_seconds", 2.0)),
+            min_displacement=float(tracker_cfg.get("min_displacement", 60)),
+            passage_queue=self.passage_queue,
+        )
 
     @property
     def recent_detections(self) -> list[dict]:
@@ -129,14 +157,17 @@ class VideoMonitor:
 
             # bbox: [ymin, xmin, ymax, xmax] normalizado 0-1
             ymin, xmin, ymax, xmax = boxes[i]
-            center_x = (xmin + xmax) / 2.0 * frame_w
-            lane = "left" if center_x < frame_w / 2 else "right"
+            cx = (xmin + xmax) / 2.0 * frame_w
+            cy = (ymin + ymax) / 2.0 * frame_h
+            lane = "left" if cx < frame_w / 2 else "right"
 
             detections.append(
                 {
                     "class": class_name,
                     "score": float(scores[i]),
                     "bbox": boxes[i].tolist(),
+                    "cx": float(cx),
+                    "cy": float(cy),
                     "lane": lane,
                 }
             )
@@ -149,9 +180,10 @@ class VideoMonitor:
             return
 
         self._cap = cv2.VideoCapture(self.source)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-        self._cap.set(cv2.CAP_PROP_FPS, self.framerate)
+        if not self._is_file_source:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+            self._cap.set(cv2.CAP_PROP_FPS, self.framerate)
 
         if not self._cap.isOpened():
             raise RuntimeError(f"No se pudo abrir cámara {self.source}")
@@ -177,7 +209,14 @@ class VideoMonitor:
 
         ret, frame = self._cap.read()
         if not ret:
-            return False
+            # Fin del video: loop si es archivo y loop_video está activo
+            if self._is_file_source and self._loop_video:
+                self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ret, frame = self._cap.read()
+                if not ret:
+                    return False
+            else:
+                return False
 
         timestamp = time.time()
         self.video_buffer.append((timestamp, frame.copy()))
@@ -187,6 +226,7 @@ class VideoMonitor:
             detections = self._run_inference(frame)
             with self._lock:
                 self._recent_detections = detections
+            self._tracker.update(detections, timestamp)
 
         return True
 

@@ -29,3 +29,4 @@ models/*.tflite
 # Agent tools (Cursor internal)
 agent-tools/
 agent-transcripts/
+.cursor/

@@ -1,6 +1,8 @@
 # Parámetros de audio
 audio:
+  source: device              # "device" = micrófono real, "file" = WAV (modo simulado)
   device_index: 5             # iMM-6C (verificar con sounddevice.query_devices())
+  file_path: null             # Ruta al .wav cuando source=file (ej: data/test_videos/traffic_xxx_audio.wav)
   sample_rate: 44100
   block_size: 4096            # ~93ms por bloque (evita input overflow)
   calibration_offset: 0.0     # dB a sumar tras calibración
@@ -44,6 +46,62 @@ paths:
 web:
   host: 0.0.0.0
   port: 8000
+
+# Centroid tracker para registro continuo de vehículos
+tracker:
+  max_distance: 80        # px, distancia máxima entre centroides para match
+  max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
+  min_track_seconds: 2.0  # duración mínima para contar como pasaje real (filtra flickering)
+  min_displacement: 60    # px, desplazamiento mínimo del centroide para contar (filtra estacionados)
+
+# Clasificador de audio (YAMNet)
+audio_classifier:
+  model_path: models/yamnet.tflite
+  labels_path: models/yamnet_labels.txt
+  min_score: 0.3
+  category_map:
+    vehicle:
+      - Vehicle
+      - Car
+      - Truck
+      - Motorcycle
+      - Bus
+      - Engine
+      - "Accelerating, revving, vroom"
+      - Tire squeal
+      - "Car horn, honking"
+    construction:
+      - Jackhammer
+      - Chainsaw
+      - Power tool
+      - Drill
+      - Sawing
+      - Hammer
+    animal:
+      - Dog
+      - Bark
+      - Cat
+      - Bird
+      - Rooster
+    alarm:
+      - Siren
+      - Alarm
+      - Emergency vehicle
+      - Buzzer
+      - Fire alarm
+      - Smoke detector
+    human:
+      - Speech
+      - Shout
+      - Screaming
+      - Music
+      - Singing
+
+# Modo simulado (Fase 0.5: desarrollo sin balcón)
+debug:
+  simulate: false             # true = video/audio de archivo, false = cámara y micrófono real
+  loop_video: true           # reiniciar video al terminar (solo si source es archivo)
+  audio_from_video: false    # true = leer audio de archivo .wav, false = usar micrófono
 
 # Jerarquía de ruido para inferencia
 noise_priority:

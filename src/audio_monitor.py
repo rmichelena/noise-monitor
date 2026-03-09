@@ -1,17 +1,27 @@
 """
 Monitor de audio: captura continua, A-weighting, detección de triggers.
 Se comunica con EventManager vía queue cuando se dispara un trigger.
+Integra AudioClassifier (YAMNet) para enriquecer triggers con clasificación de sonido.
+Soporta modo device (micrófono real) y file (WAV para desarrollo simulado).
 """
 
 import logging
+import os
 import threading
+import time
 from collections import deque
+from pathlib import Path
 from queue import Queue
+from typing import TYPE_CHECKING
 
 import numpy as np
 import sounddevice as sd
+from scipy.io import wavfile
 
 from .utils import apply_a_weighting, load_config, rms_to_db
+
+if TYPE_CHECKING:
+    from .audio_classifier import AudioClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +32,17 @@ class AudioMonitor:
     Expone buffer circular y current_db para el EventManager.
     """
 
-    def __init__(self, config: dict | None = None, event_queue: Queue | None = None):
+    def __init__(
+        self,
+        config: dict | None = None,
+        event_queue: Queue | None = None,
+        base_dir: Path | None = None,
+        audio_classifier: "AudioClassifier | None" = None,
+    ):
         self.config = config or load_config()
         self.event_queue = event_queue or Queue()
+        self.base_dir = Path(base_dir or os.getcwd())
+        self._classifier = audio_classifier
 
         audio_cfg = self.config["audio"]
         triggers_cfg = self.config["triggers"]
@@ -34,6 +52,34 @@ class AudioMonitor:
         self.block_size = int(audio_cfg["block_size"])
         self.device_index = audio_cfg.get("device_index")
         self.calibration_offset = float(audio_cfg.get("calibration_offset", 0.0))
+
+        # Modo: "device" = micrófono, "file" = WAV (modo simulado)
+        debug_cfg = self.config.get("debug", {})
+        audio_from_video = bool(debug_cfg.get("audio_from_video", False))
+        video_source = self.config.get("video", {}).get("source")
+
+        if audio_from_video and isinstance(video_source, str):
+            # Derivar ruta de audio: video.mp4 -> video_audio.wav
+            video_path = Path(video_source)
+            if not video_path.is_absolute():
+                video_path = self.base_dir / video_path
+            audio_path = video_path.with_stem(video_path.stem + "_audio").with_suffix(".wav")
+            file_path = str(audio_path.resolve())
+        else:
+            file_path = audio_cfg.get("file_path")
+
+        if audio_from_video or audio_cfg.get("source") == "file":
+            self.audio_source = "file"
+        else:
+            self.audio_source = str(audio_cfg.get("source", "device")).lower()
+
+        if file_path:
+            path = Path(file_path)
+            if not path.is_absolute():
+                path = self.base_dir / path
+            self.audio_file_path = str(path.resolve())
+        else:
+            self.audio_file_path = None
 
         self.peak_db = float(triggers_cfg["peak_db"])
         self.sustained_db = float(triggers_cfg["sustained_db"])
@@ -64,16 +110,12 @@ class AudioMonitor:
         with self._lock:
             return self._current_db
 
-    def _audio_callback(self, indata, frames, time_info, status):
-        if status:
-            logger.warning("Audio status: %s", status)
-
+    def _process_block(self, block: np.ndarray, timestamp: float):
+        """Procesa un bloque de audio: A-weighting, buffer, triggers."""
         # Mono: flatten si viene (frames, 1)
-        block = np.squeeze(indata.copy()).astype(np.float32)
+        block = np.squeeze(block).astype(np.float32)
         if block.ndim > 1:
             block = block.mean(axis=1)
-
-        timestamp = time_info.inputBufferAdcTime
 
         # A-weighting
         filtered = apply_a_weighting(block, self.sample_rate)
@@ -89,47 +131,151 @@ class AudioMonitor:
         self.audio_buffer.append((timestamp, block.copy()))
 
         # Evaluar triggers
+        triggered = False
+        trigger_type = None
+
         if db >= self.peak_db:
-            self.event_queue.put(
-                {"type": "peak", "db": db, "timestamp": timestamp, "db_avg": db}
-            )
+            triggered = True
+            trigger_type = "peak"
             self._sustained_blocks = 0
         elif db >= self.sustained_db:
             self._sustained_blocks += 1
             if self._sustained_blocks >= self._sustained_blocks_needed:
-                self.event_queue.put(
-                    {
-                        "type": "sustained",
-                        "db": db,
-                        "timestamp": timestamp,
-                        "db_avg": db,
-                    }
-                )
+                triggered = True
+                trigger_type = "sustained"
                 self._sustained_blocks = 0
         else:
             self._sustained_blocks = max(0, self._sustained_blocks - 1)
 
+        if triggered:
+            event = {"type": trigger_type, "db": db, "timestamp": timestamp, "db_avg": db}
+
+            # YAMNet classification (~1s window from buffer)
+            if self._classifier:
+                try:
+                    window = self._get_classification_window()
+                    if window is not None:
+                        sc, cat, score = self._classifier.classify(
+                            window, source_sr=self.sample_rate
+                        )
+                        event["sound_class"] = sc
+                        event["sound_category"] = cat
+                        event["sound_confidence"] = score
+                except Exception:
+                    logger.exception("Error en clasificación YAMNet")
+
+            self.event_queue.put(event)
+
+    def _get_classification_window(self, duration_s: float = 1.0) -> np.ndarray | None:
+        """Extract the last ~duration_s of audio from the buffer for YAMNet."""
+        blocks_needed = max(1, int(duration_s * self.sample_rate / self.block_size))
+        buf = list(self.audio_buffer)
+        if len(buf) < blocks_needed:
+            return None
+        recent = buf[-blocks_needed:]
+        return np.concatenate([b[1] for b in recent], axis=0)
+
+    def _audio_callback(self, indata, frames, time_info, status):
+        """Callback de sounddevice (modo device)."""
+        if status:
+            logger.warning("Audio status: %s", status)
+        timestamp = time_info.inputBufferAdcTime
+        self._process_block(indata.copy(), timestamp)
+
+    def _file_reader_loop(self):
+        """Lee WAV en chunks simulando captura en tiempo real (modo file)."""
+        if not self.audio_file_path or not Path(self.audio_file_path).exists():
+            logger.error("Archivo de audio no encontrado: %s", self.audio_file_path)
+            return
+
+        sr, data = wavfile.read(self.audio_file_path)
+        if sr != self.sample_rate:
+            logger.error(
+                "WAV tiene %d Hz, se requiere %d Hz. Re-extraer con: "
+                "ffmpeg -i video.mp4 -vn -ar %d -ac 1 -f wav output.wav",
+                sr,
+                self.sample_rate,
+                self.sample_rate,
+            )
+            return
+
+        if data.dtype == np.int16:
+            data = data.astype(np.float32) / 32768.0
+        elif data.dtype != np.float32:
+            data = data.astype(np.float32) / np.iinfo(data.dtype).max
+
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        if len(data) < self.block_size:
+            logger.error(
+                "Archivo de audio demasiado corto: %d muestras, se requiere al menos %d (block_size). "
+                "Duración mínima: %.2f s",
+                len(data),
+                self.block_size,
+                self.block_size / self.sample_rate,
+            )
+            return
+
+        block_duration = self.block_size / self.sample_rate
+        pos = 0
+        start_time = time.time()
+
+        while self._running:
+            chunk = data[pos : pos + self.block_size]
+            if len(chunk) < self.block_size:
+                # Fin del archivo: loop al inicio
+                pos = 0
+                chunk = data[pos : pos + self.block_size]
+                if len(chunk) < self.block_size:
+                    logger.error(
+                        "Chunk incompleto tras loop (%d < %d muestras). Archivo corrupto?",
+                        len(chunk),
+                        self.block_size,
+                    )
+                    break
+
+            pos += self.block_size
+            if pos >= len(data):
+                pos = 0
+
+            elapsed = time.time() - start_time
+            timestamp = start_time + elapsed
+            self._process_block(chunk.astype(np.float32), timestamp)
+            time.sleep(block_duration)
+
     def start(self):
-        """Inicia captura en un thread."""
+        """Inicia captura (device o file según config)."""
         if self._running:
             return
 
         self._running = True
-        self._stream = sd.InputStream(
-            device=self.device_index,
-            channels=1,
-            dtype="float32",
-            blocksize=self.block_size,
-            samplerate=self.sample_rate,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
-        logger.info(
-            "AudioMonitor iniciado: device=%s, %d Hz, block=%d",
-            self.device_index,
-            self.sample_rate,
-            self.block_size,
-        )
+
+        if self.audio_source == "file" and self.audio_file_path:
+            self._thread = threading.Thread(target=self._file_reader_loop, daemon=True)
+            self._thread.start()
+            logger.info(
+                "AudioMonitor iniciado (file): %s, %d Hz, block=%d",
+                self.audio_file_path,
+                self.sample_rate,
+                self.block_size,
+            )
+        else:
+            self._stream = sd.InputStream(
+                device=self.device_index,
+                channels=1,
+                dtype="float32",
+                blocksize=self.block_size,
+                samplerate=self.sample_rate,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+            logger.info(
+                "AudioMonitor iniciado: device=%s, %d Hz, block=%d",
+                self.device_index,
+                self.sample_rate,
+                self.block_size,
+            )
 
     def stop(self):
         """Detiene captura."""
@@ -138,4 +284,5 @@ class AudioMonitor:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        self._thread = None
         logger.info("AudioMonitor detenido")

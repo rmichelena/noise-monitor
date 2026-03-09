@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Noise Monitor - Orquestador principal.
-Arranca AudioMonitor, VideoMonitor y EventManager en threads.
+Arranca AudioMonitor (con YAMNet), VideoMonitor (con tracker) y EventManager en threads.
 """
 
 import logging
@@ -16,12 +16,38 @@ from src.video_monitor import VideoMonitor
 
 
 def setup_logging(level: str = "INFO"):
-    """Configura logging."""
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
+    )
+
+
+def _load_audio_classifier(config: dict, base_dir: Path):
+    """Intenta cargar AudioClassifier (YAMNet). Retorna None si falta modelo."""
+    ac_cfg = config.get("audio_classifier")
+    if not ac_cfg:
+        return None
+
+    model_path = base_dir / ac_cfg["model_path"]
+    labels_path = base_dir / ac_cfg["labels_path"]
+
+    if not model_path.exists():
+        logging.getLogger("main").warning(
+            "YAMNet model no encontrado en %s — clasificación deshabilitada. "
+            "Ejecutar: scripts/download_yamnet.sh",
+            model_path,
+        )
+        return None
+
+    from src.audio_classifier import AudioClassifier
+
+    return AudioClassifier(
+        model_path=str(model_path),
+        labels_path=str(labels_path),
+        category_map=ac_cfg.get("category_map", {}),
+        min_score=float(ac_cfg.get("min_score", 0.3)),
     )
 
 
@@ -32,7 +58,9 @@ def main():
     base_dir = Path(__file__).parent.resolve()
     config = load_config(base_dir / "config.yaml")
 
-    audio = AudioMonitor(config=config)
+    classifier = _load_audio_classifier(config, base_dir)
+
+    audio = AudioMonitor(config=config, base_dir=base_dir, audio_classifier=classifier)
     video = VideoMonitor(config=config, base_dir=base_dir)
     event_mgr = EventManager(audio, video, config=config, base_dir=base_dir)
 
@@ -50,17 +78,14 @@ def main():
     audio.start()
     video.start()
 
-    # EventManager en thread (consume cola)
     import threading
+    import time
 
     t_event = threading.Thread(target=event_mgr.run, daemon=True)
     t_event.start()
 
-    # Video en thread (captura + inferencia)
     t_video = threading.Thread(target=video.run_loop, daemon=True)
     t_video.start()
-
-    import time
 
     try:
         while True:

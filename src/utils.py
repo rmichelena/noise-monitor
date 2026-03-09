@@ -92,6 +92,8 @@ def resolve_path(config: dict, key: str, base_dir: Path | None = None) -> Path:
 def init_database(config: dict | None = None, base_dir: Path | None = None) -> str:
     """
     Crea la base de datos si no existe y aplica el schema.
+    Ejecuta each statement individually to tolerate migration errors
+    (e.g. source table doesn't exist in fresh DBs).
     Retorna la ruta a la base de datos.
     """
     if config is None:
@@ -107,7 +109,18 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
             schema_sql = f.read()
 
         conn = sqlite3.connect(str(db_path))
-        conn.executescript(schema_sql)
+        for statement in schema_sql.split(";"):
+            # Strip comments and whitespace to check if there's real SQL
+            lines = [
+                l for l in statement.strip().splitlines()
+                if l.strip() and not l.strip().startswith("--")
+            ]
+            if not lines:
+                continue
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError:
+                pass  # tolerate migration errors
         conn.commit()
         conn.close()
 

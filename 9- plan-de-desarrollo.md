@@ -28,10 +28,12 @@ Mientras la cámara no esté instalada en el balcón, se usan videos de tráfico
 
 ### 0.5.1 Descarga de videos
 
-- [ ] Instalar `yt-dlp` en el server: `pip install yt-dlp` (fuera del venv, o con pipx).
-- [ ] Crear directorio `data/test_videos/` en el server.
+- [x] Instalar `yt-dlp` en el server: `pip install yt-dlp` (fuera del venv, o con pipx).
+- [x] Crear directorio `data/test_videos/` en el server.
 - [ ] Descargar 3-4 videos de tráfico con audio real (buscar "traffic camera live" o "urban traffic noise"):
   ```bash
+  ./scripts/download_test_videos.sh "URL1" "URL2" "URL3"
+  # O manualmente:
   cd ~/noise-monitor/data/test_videos
   yt-dlp -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" \
     --merge-output-format mp4 -o "traffic_%(id)s.mp4" "URL_DEL_VIDEO"
@@ -41,35 +43,20 @@ Mientras la cámara no esté instalada en el balcón, se usan videos de tráfico
 
 ### 0.5.2 Configuración para modo simulado
 
-- [ ] En `config.yaml`, cambiar `video.source` de `0` a la ruta del video:
-  ```yaml
-  video:
-    source: "data/test_videos/traffic_xxx.mp4"  # ruta relativa al proyecto
-  ```
-- [ ] En `src/video_monitor.py`, agregar lógica de loop: cuando `cv2.VideoCapture.read()` retorna `False` (fin del video), hacer `cap.set(cv2.CAP_PROP_POS_FRAMES, 0)` para reiniciar desde el inicio. Esto permite correr el pipeline continuamente con un video finito.
-- [ ] Para audio: el video de YouTube ya tiene pista de audio. Dos opciones:
-  - **Opción A (recomendada)**: extraer el audio del video con ffmpeg y alimentarlo al pipeline en lugar del micrófono:
-    ```bash
-    ffmpeg -i traffic_xxx.mp4 -vn -ar 44100 -ac 1 -f wav traffic_xxx_audio.wav
-    ```
-    Luego en `audio_monitor.py`, agregar modo "file" que lee el .wav en chunks simulando captura en tiempo real.
-  - **Opción B (más simple)**: usar el micrófono real (iMM-6C) y reproducir el audio del video por un parlante cerca. Menos reproducible pero no requiere cambios en audio_monitor.
-- [ ] Agregar flag en `config.yaml` para modo simulado:
-  ```yaml
-  debug:
-    simulate: true              # true = video de archivo, false = cámara real
-    loop_video: true            # reiniciar video al terminar
-    audio_from_video: true      # extraer audio del video en lugar de usar micrófono
-  ```
+- [x] En `config.yaml`, cambiar `video.source` de `0` a la ruta del video (o usar `config.simulate.yaml.example`).
+- [x] En `src/video_monitor.py`, agregar lógica de loop: cuando `cv2.VideoCapture.read()` retorna `False` (fin del video), hacer `cap.set(cv2.CAP_PROP_POS_FRAMES, 0)` para reiniciar desde el inicio.
+- [x] Para audio: extraer con `./scripts/extract_audio_from_video.sh data/test_videos/traffic_xxx.mp4`. Con `debug.audio_from_video: true`, el pipeline usa automáticamente `traffic_xxx_audio.wav` (derivado del path del video).
+- [x] Agregar flag en `config.yaml` para modo simulado (sección `debug`).
 
 ### 0.5.3 Revertir para producción
 
-Cuando se instale la cámara en el balcón, solo hay que cambiar:
+Cuando se instale la cámara en el balcón, cambiar en `config.yaml`:
 ```yaml
 video:
   source: 0                     # volver al dispositivo USB
 debug:
   simulate: false
+  audio_from_video: false
 ```
 
 ---
@@ -128,30 +115,51 @@ El objetivo es que el sistema detecte y registre eventos de ruido con correlaci�
   - Manejo limpio de señales (SIGINT/SIGTERM → shutdown graceful)
   - Logging estructurado (nivel configurable)
 
+### 1.6b Registro continuo de vehículos (CentroidTracker)
+
+Cambio conceptual respecto al diseño original: el sistema ahora registra **todos** los vehículos que pasan, no solo los que generan ruido. Esto permite estadísticas completas de tráfico (cuántos camiones/autos/motos pasan al día) independientemente del nivel sonoro.
+
+- [x] Nuevo schema de DB con 2 tablas: `vehicle_passages` (registro continuo del tracker) + `noise_events` (eventos de ruido con clip y clasificación YAMNet). Migración automática desde la tabla `events` original.
+- [x] Implementar `src/vehicle_tracker.py`: clase `CentroidTracker` con:
+  - Matching por distancia euclidiana de centroides en **coordenadas de píxel** (no normalizadas)
+  - Solo rastrea clases vehiculares: car, truck, bus, motorcycle, bicycle
+  - `max_distance`: distancia máxima para match entre frames (default 80px)
+  - `max_disappeared`: frames de inferencia sin ver antes de marcar como salido (default 20)
+  - `min_track_seconds`: duración mínima de tracking para contar como pasaje real, filtra flickering del modelo (default 2.0s)
+  - `min_displacement`: desplazamiento mínimo del centroide entre primera y última detección, filtra vehículos estacionados (default 60px)
+  - Cola thread-safe `passage_queue` para comunicar pasajes completados al EventManager
+- [x] Integrar tracker en `src/video_monitor.py`: se actualiza en cada frame de inferencia, expone `passage_queue`.
+- [x] Refactorizar `src/event_manager.py` para consumir 2 colas en paralelo:
+  - `passage_queue` (tracker) → INSERT en `vehicle_passages` con dB del momento
+  - `trigger_queue` (AudioMonitor) → INSERT en `noise_events` + guardar clip + correlacionar con passage si es vehicular
+- [x] Actualizar `scripts/stats.py`: consulta ambas tablas (pasajes por clase/carril/dB, eventos por categoría de sonido).
+- [x] Configuración en `config.yaml` → sección `tracker`.
+
 ### 1.7 Clasificador de audio (YAMNet)
 
 YAMNet clasifica el tipo de sonido (521 clases AudioSet) para diferenciar vehículos de construcción, animales, alarmas, etc. Corre en CPU, no necesita el Coral. Ver Doc 3 sección 8.
 
-- [ ] Descargar `yamnet.tflite` y `yamnet_labels.txt` del repo TFLite model hub. Guardar en `models/`.
-- [ ] Instalar `resampy` en el venv del server (para resampleo 44.1kHz → 16kHz).
-- [ ] Implementar `src/audio_classifier.py`: clase `AudioClassifier` con:
+- [x] Descargar `yamnet.tflite` y `yamnet_labels.txt` al servidor en `models/` (script: `scripts/download_yamnet.sh`).
+- [x] Instalar `resampy` en el venv del server (para resampleo 44.1kHz → 16kHz).
+- [x] Implementar `src/audio_classifier.py`: clase `AudioClassifier` con:
   - Carga de YAMNet TFLite vía `ai-edge-litert` (mismo runtime, sin delegate Edge TPU)
-  - Resampleo de audio input a 16kHz mono
-  - Inferencia → top class + score
+  - Input fijo de 15600 samples (0.975s @ 16kHz) — pad/truncate para evitar problemas con XNNPACK delegate
+  - Resampleo de audio input a 16kHz mono con `resampy`
+  - Inferencia → top class + score, promediando patches si YAMNet retorna múltiples
   - Mapeo de clase AudioSet → categoría propia (`vehicle`, `construction`, `animal`, `alarm`, `human`, `other`) según `config.yaml` → `audio_classifier.category_map`
   - Score mínimo configurable (`min_score`, default 0.3)
 - [ ] Crear `scripts/test_yamnet.py`: grabar 3s de audio, clasificar, imprimir top-5 clases con scores.
-- [ ] Actualizar `schema.sql`: agregar columnas `sound_class`, `sound_category`, `sound_confidence` a tabla events. Agregar índice `idx_sound_category`.
+- [x] Schema actualizado: nueva tabla `noise_events` incluye `sound_class`, `sound_category`, `sound_confidence`.
 
 ### 1.8 Integración de YAMNet en pipeline
 
-- [ ] Refactorizar `src/audio_monitor.py`: cuando se dispara un trigger, clasificar la ventana de audio con `AudioClassifier` antes de encolar el evento.
-- [ ] Refactorizar `src/event_manager.py`: bifurcación según `sound_category`:
-  - `vehicle` → correlación visual (VideoMonitor) como antes
-  - Cualquier otra categoría → registro directo sin video
+- [x] Refactorizar `src/audio_monitor.py`: cuando se dispara un trigger, clasificar ~1s de audio del buffer con `AudioClassifier` antes de encolar el evento. Datos de YAMNet incluidos en el dict del trigger.
+- [x] Refactorizar `src/event_manager.py`: bifurcación según `sound_category`:
+  - `vehicle` → correlación visual + búsqueda de passage reciente del mismo tipo
+  - Cualquier otra categoría → registro como noise_event sin correlación visual
   - En ambos casos: guardar `sound_class`, `sound_category`, `sound_confidence` en el evento
-- [ ] Actualizar `config.yaml` con sección `audio_classifier` (model_path, labels_path, min_score, category_map).
-- [ ] Actualizar `main.py` para instanciar `AudioClassifier` y pasarlo al `AudioMonitor`.
+- [x] Actualizar `config.yaml` con sección `audio_classifier` (model_path, labels_path, min_score, category_map con 5 categorías).
+- [x] Actualizar `main.py` para instanciar `AudioClassifier` y pasarlo al `AudioMonitor`. Graceful fallback si el modelo no está descargado.
 
 ### 1.9 Evaluación de modelo de video
 
