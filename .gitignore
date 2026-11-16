@@ -16,6 +16,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Configuración local (usar config.example.yaml / config.simulate.yaml.example)
+config.yaml
+
 # Data (large/generated files stay on the server, not in git)
 data/
 frame_test.jpg

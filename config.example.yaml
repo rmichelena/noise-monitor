@@ -1,3 +1,7 @@
+# Ejemplo de configuración para hardware real (copia a config.yaml y ajusta).
+# config.yaml está en .gitignore: cada nodo mantiene su configuración local.
+# Para el modo simulado sin balcón, ver config.simulate.yaml.example.
+
 # Parámetros de audio
 audio:
   source: device              # "device" = micrófono real, "file" = WAV (modo simulado)
