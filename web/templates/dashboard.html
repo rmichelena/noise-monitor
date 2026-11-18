@@ -72,7 +72,7 @@
         <td><span class="tag {{ 'vehicle' if e.sound_category == 'vehicle' else '' }}">{{ e.sound_class or e.sound_category or "?" }}</span></td>
         <td>{{ e.vehicle_class or "—" }}{% if e.direction %} <span class="tag">{{ e.direction }}</span>{% endif %}</td>
         <td class="num">{{ "%.2f"|format(e.sound_confidence) if e.sound_confidence else "—" }}</td>
-        <td>{% if e.has_clip %}<a class="a" href="/api/clips/{{ e.id }}" target="_blank">▶ ver</a>{% else %}—{% endif %}</td>
+        <td>{% if e.has_clip %}<button class="play" data-src="/api/clips/{{ e.id }}" data-cap="{{ e.timestamp[5:10] }} {{ e.timestamp[11:19] }} · {{ '%.1f'|format(e.db_max) }} dB(A) · {{ e.sound_class or e.sound_category or '?' }}">▶ ver</button>{% else %}—{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -82,7 +82,36 @@
   {% endif %}
 </section>
 
+<dialog id="player">
+  <div class="dlg">
+    <button class="x" id="player-close" aria-label="Cerrar">✕</button>
+    <video id="player-video" controls playsinline preload="metadata"></video>
+    <div class="cap" id="player-cap"></div>
+  </div>
+</dialog>
+
 <script>
+const player = document.getElementById('player');
+const playerVideo = document.getElementById('player-video');
+const playerCap = document.getElementById('player-cap');
+function closePlayer() {
+  playerVideo.pause();
+  playerVideo.removeAttribute('src');
+  playerVideo.load();
+  player.close();
+}
+document.querySelectorAll('button.play').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    playerVideo.src = btn.dataset.src;
+    playerCap.textContent = btn.dataset.cap || '';
+    player.showModal();
+    playerVideo.play().catch(() => {});
+  });
+});
+document.getElementById('player-close').addEventListener('click', closePlayer);
+player.addEventListener('click', (ev) => { if (ev.target === player) closePlayer(); });
+player.addEventListener('close', () => { playerVideo.pause(); });
+
 async function poll() {
   try {
     const r = await fetch('/api/live', {cache: 'no-store'});

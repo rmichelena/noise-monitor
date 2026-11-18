@@ -119,7 +119,6 @@ class EventManager:
         audio_blocks: list[tuple[float, np.ndarray]],
         video_frames: list[tuple[float, np.ndarray]],
         sample_rate: int,
-        fps: int,
         event_timestamp: float,
     ) -> tuple[str | None, int]:
         if not audio_blocks or not video_frames:
@@ -140,13 +139,24 @@ class EventManager:
         frame_h, frame_w = first_frame.shape[:2]
         actual_resolution = (frame_w, frame_h)
 
+        # fps real derivado de los timestamps: si la cámara entrega 60 fps y
+        # se escribe a 30, el video duraba el doble que el audio.
+        span = video_frames[-1][0] - video_frames[0][0]
+        fps_out = (len(video_frames) - 1) / span if span > 0 else 1.0
+        fps_out = max(1.0, min(fps_out, 120.0))
+
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(video_path, fourcc, fps, actual_resolution)
+        out = cv2.VideoWriter(video_path, fourcc, fps_out, actual_resolution)
         for _, frame in video_frames:
             out.write(frame)
         out.release()
 
         duration_ms = int(len(audio_data) / sample_rate * 1000)
+        audio_span = audio_blocks[-1][0] - audio_blocks[0][0]
+        logger.info(
+            "Clip: audio %.2fs (%d bloques), video %.2fs (%d frames, %.1f fps)",
+            audio_span, len(audio_blocks), span, len(video_frames), fps_out,
+        )
         ts = datetime.fromtimestamp(event_timestamp).strftime("%Y%m%d_%H%M%S")
         clip_filename = f"event_{ts}.mp4"
         clip_path = self.clips_dir / clip_filename
@@ -287,20 +297,31 @@ class EventManager:
         if not vehicle_dets and db_max < self.peak_db and db_max < self.correlation_db:
             return
 
-        # Save clip
+        # Save clip: ventana temporal real [t-pre, t+post]. Se espera a que el
+        # post esté capturado; antes se recortaba por número de frames y con
+        # la cámara a 60 fps el video quedaba a la mitad de velocidad.
         sample_rate = self.config["audio"]["sample_rate"]
-        block_size = self.config["audio"]["block_size"]
-        fps = self.config["video"]["framerate"]
 
-        blocks_per_second = sample_rate / block_size
-        n_audio_blocks = int((self.pre_seconds + self.post_seconds) * blocks_per_second)
-        n_video_frames = (self.pre_seconds + self.post_seconds) * fps
+        wait = (timestamp + self.post_seconds) - time.time()
+        if wait > 0:
+            time.sleep(min(wait, self.post_seconds))
 
-        audio_list = list(self.audio_monitor.audio_buffer)[-n_audio_blocks:]
-        video_list = list(self.video_monitor.video_buffer)[-int(n_video_frames):]
+        t_start = timestamp - self.pre_seconds
+        t_end = timestamp + self.post_seconds
+
+        audio_list = [
+            (ts, block)
+            for ts, block in self.audio_monitor.audio_buffer
+            if t_start <= ts <= t_end
+        ]
+        video_list = [
+            (ts, frame)
+            for ts, frame in self.video_monitor.video_buffer
+            if t_start <= ts <= t_end
+        ]
 
         clip_path, duration_ms = self._save_clip(
-            audio_list, video_list, sample_rate, fps, timestamp
+            audio_list, video_list, sample_rate, timestamp
         )
         if clip_path is None:
             clip_path = ""

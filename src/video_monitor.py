@@ -62,8 +62,14 @@ class VideoMonitor:
         self.inference_interval = int(video_cfg["inference_interval"])
         self.detection_threshold = float(video_cfg["detection_threshold"])
 
-        video_seconds = int(buffer_cfg["video_seconds"])
-        self.buffer_maxlen = video_seconds * self.framerate
+        self.video_seconds = int(buffer_cfg["video_seconds"])
+        # La cámara entrega más fps de los configurados (medido: ~60 con
+        # framerate=30). El buffer se recorta por tiempo, no por número de
+        # frames, y la captura se limita a `framerate` fps reales: si no, un
+        # clip de 10 s de audio se escribía con 5 s de video a 30 fps.
+        self.buffer_maxlen = int(self.video_seconds * self.framerate * 1.5)
+        self._min_frame_interval = 1.0 / self.framerate
+        self._last_stored_ts = 0.0
 
         self.video_buffer: deque[tuple[float, np.ndarray]] = deque(maxlen=self.buffer_maxlen)
         self._recent_detections: list[dict] = []
@@ -253,7 +259,20 @@ class VideoMonitor:
                 return False
 
         timestamp = time.time()
+        # La cámara puede entregar 60 fps aunque se pida 30: descartar los
+        # frames sobrantes mantiene 1 frame por intervalo real y evita que
+        # el buffer (y el clip) se estiren en el tiempo.
+        if (
+            self._last_stored_ts
+            and timestamp - self._last_stored_ts < self._min_frame_interval
+        ):
+            return True
+        self._last_stored_ts = timestamp
+
         self.video_buffer.append((timestamp, frame.copy()))
+        cutoff = timestamp - self.video_seconds
+        while self.video_buffer and self.video_buffer[0][0] < cutoff:
+            self.video_buffer.popleft()
 
         self._frame_count += 1
         if self._frame_count % self.inference_interval == 0:

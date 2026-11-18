@@ -198,7 +198,12 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         # Solo se sirven archivos dentro del directorio de clips configurado.
         if clips_dir.resolve() not in path.parents or not path.is_file():
             raise HTTPException(status_code=404, detail="Archivo no encontrado")
-        return FileResponse(path, media_type="video/mp4", filename=path.name)
+        # inline: el navegador lo reproduce en el modal en vez de descargarlo
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+        )
 
     @app.get("/api/stats")
     def api_stats():
