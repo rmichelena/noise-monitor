@@ -15,6 +15,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from fastapi.templating import Jinja2Templates
 from src.utils import resolve_path
 
 PAGE_SIZE = 20
+logger = logging.getLogger(__name__)
 
 
 def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=None) -> FastAPI:
@@ -48,7 +50,10 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             return []
         try:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            # Sin este log una columna inexistente devolvía una lista vacía
+            # y el dashboard parecía "sin datos" en vez de roto.
+            logger.warning("Consulta falló (%s): %s", sql.split()[2] if sql.split() else "?", exc)
             return []
         finally:
             conn.close()
@@ -103,18 +108,21 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     def _events(limit: int, category: str | None, min_db: float | None) -> list[dict]:
         sql = (
-            "SELECT id, timestamp, db_max, db_avg, trigger_type, sound_class,"
-            " sound_category, sound_confidence, vehicle_class, direction, clip_path"
-            " FROM noise_events WHERE 1=1"
+            "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
+            " e.sound_class, e.sound_category, e.sound_confidence, e.vehicle_class,"
+            " e.clip_path, p.direction AS direction"
+            " FROM noise_events e"
+            " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
+            " WHERE 1=1"
         )
         params: list = []
         if category:
-            sql += " AND sound_category = ?"
+            sql += " AND e.sound_category = ?"
             params.append(category)
         if min_db is not None:
-            sql += " AND db_max >= ?"
+            sql += " AND e.db_max >= ?"
             params.append(min_db)
-        sql += " ORDER BY id DESC LIMIT ?"
+        sql += " ORDER BY e.id DESC LIMIT ?"
         params.append(limit)
         rows = _query(sql, tuple(params))
         for r in rows:

@@ -62,12 +62,12 @@
   {% if events %}
   <table>
     <thead>
-      <tr><th>hora</th><th>dB(A)</th><th>sonido</th><th>vehículo</th><th>conf.</th><th>clip</th></tr>
+      <tr><th>fecha · hora</th><th>dB(A)</th><th>sonido</th><th>vehículo</th><th>conf.</th><th>clip</th></tr>
     </thead>
     <tbody>
     {% for e in events %}
       <tr>
-        <td class="num">{{ e.timestamp[11:19] }}</td>
+        <td class="num">{{ e.timestamp[5:10] }} {{ e.timestamp[11:19] }}</td>
         <td class="num">{{ "%.1f"|format(e.db_max) }}</td>
         <td><span class="tag {{ 'vehicle' if e.sound_category == 'vehicle' else '' }}">{{ e.sound_class or e.sound_category or "?" }}</span></td>
         <td>{{ e.vehicle_class or "—" }}{% if e.direction %} <span class="tag">{{ e.direction }}</span>{% endif %}</td>
