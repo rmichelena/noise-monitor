@@ -1,0 +1,7 @@
+  <svg class="spark" viewBox="0 0 100 60" preserveAspectRatio="none" role="img"
+       aria-label="barras de nivel sonoro por minuto">
+    {% for b in bars %}
+    <rect x="{{ b.x }}" y="{{ 60 - b.h }}" width="{{ b.w }}" height="{{ b.h }}"></rect>
+    {% endfor %}
+  </svg>
+  {% if not bars %}<p style="color:var(--dim);font-size:13px">Sin datos todavía.</p>{% endif %}

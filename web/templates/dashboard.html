@@ -4,82 +4,22 @@
 {% block content %}
 <section>
   <h2>Ahora</h2>
-  <div class="grid">
-    <div class="metric">
-      <div class="v"><span id="db">{{ current_db if current_db is not none else "—" }}</span>
-        <span style="font-size:14px;color:var(--dim)">dB(A)</span></div>
-      <div class="l">nivel instantáneo</div>
-    </div>
-    <div class="metric">
-      <div class="v" id="events_today">{{ counters.events }}</div>
-      <div class="l">eventos hoy</div>
-    </div>
-    <div class="metric">
-      <div class="v" id="passages_today">{{ counters.passages }}</div>
-      <div class="l">vehículos hoy</div>
-    </div>
-    <div class="metric">
-      <div class="v"><span id="max_db">{{ counters.max_db if counters.max_db is not none else "—" }}</span></div>
-      <div class="l">máximo hoy dB(A)</div>
-    </div>
-    <div class="metric">
-      <div class="v" id="coral">{% if coral_ok is none %}?{% elif coral_ok %}<span class="ok">activo</span>{% else %}<span class="bad">sin TPU</span>{% endif %}</div>
-      <div class="l">detección visual</div>
-    </div>
-  </div>
+  <div id="live">{% include "_live.html" %}</div>
 </section>
 
 <section>
   <h2>Fondo sonoro · últimos 120 minutos (pico por minuto)</h2>
-  <svg class="spark" viewBox="0 0 100 60" preserveAspectRatio="none" role="img"
-       aria-label="barras de nivel sonoro por minuto">
-    {% for b in bars %}
-    <rect x="{{ b.x }}" y="{{ 60 - b.h }}" width="{{ b.w }}" height="{{ b.h }}"></rect>
-    {% endfor %}
-  </svg>
-  {% if not bars %}<p style="color:var(--dim);font-size:13px">Sin datos todavía.</p>{% endif %}
+  <div id="spark">{% include "_spark.html" %}</div>
 </section>
 
 <section>
   <h2>Vehículos hoy</h2>
-  {% if passages.by_class %}
-  <div class="grid">
-    {% for k, v in passages.by_class.items() %}
-    <div class="metric"><div class="v">{{ v }}</div><div class="l">{{ k }}</div></div>
-    {% endfor %}
-    {% for k, v in passages.by_dir.items() %}
-    <div class="metric"><div class="v">{{ v }}</div>
-      <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div></div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <p style="color:var(--dim);font-size:13px">Sin pasajes registrados hoy.</p>
-  {% endif %}
+  <div id="vehicles">{% include "_vehicles.html" %}</div>
 </section>
 
 <section>
   <h2>Últimos eventos de ruido</h2>
-  {% if events %}
-  <table>
-    <thead>
-      <tr><th>fecha · hora</th><th>dB(A)</th><th>sonido</th><th>vehículo</th><th>conf.</th><th>clip</th></tr>
-    </thead>
-    <tbody>
-    {% for e in events %}
-      <tr>
-        <td class="num">{{ e.timestamp[5:10] }} {{ e.timestamp[11:19] }}</td>
-        <td class="num">{{ "%.1f"|format(e.db_max) }}</td>
-        <td><span class="tag {{ 'vehicle' if e.sound_category == 'vehicle' else '' }}">{{ e.sound_class or e.sound_category or "?" }}</span></td>
-        <td>{{ e.vehicle_class or "—" }}{% if e.direction %} <span class="tag">{{ e.direction }}</span>{% endif %}</td>
-        <td class="num">{{ "%.2f"|format(e.sound_confidence) if e.sound_confidence else "—" }}</td>
-        <td>{% if e.has_clip %}<button class="play" data-src="/api/clips/{{ e.id }}" data-cap="{{ e.timestamp[5:10] }} {{ e.timestamp[11:19] }} · {{ '%.1f'|format(e.db_max) }} dB(A) · {{ e.sound_class or e.sound_category or '?' }}">▶ ver</button>{% else %}—{% endif %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p style="color:var(--dim);font-size:13px">Sin eventos registrados todavía.</p>
-  {% endif %}
+  <div id="events">{% include "_events.html" %}</div>
 </section>
 
 <dialog id="player">
@@ -100,17 +40,40 @@ function closePlayer() {
   playerVideo.load();
   player.close();
 }
-document.querySelectorAll('button.play').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    playerVideo.src = btn.dataset.src;
-    playerCap.textContent = btn.dataset.cap || '';
-    player.showModal();
-    playerVideo.play().catch(() => {});
-  });
+// Delegación: la lista de eventos se reemplaza por auto-refresh y los
+// listeners de los botones no sobreviven a un innerHTML nuevo.
+document.getElementById('events').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button.play');
+  if (!btn) return;
+  playerVideo.src = btn.dataset.src;
+  playerCap.textContent = btn.dataset.cap || '';
+  player.showModal();
+  playerVideo.play().catch(() => {});
 });
 document.getElementById('player-close').addEventListener('click', closePlayer);
 player.addEventListener('click', (ev) => { if (ev.target === player) closePlayer(); });
 player.addEventListener('close', () => { playerVideo.pause(); });
+
+// Refresco de fragmentos: lista de eventos, gráfico y vehículos. El modal
+// vive fuera de estos contenedores, así que se puede refrescar debajo.
+const FRAGMENTS = [
+  ['events', '/partials/events'],
+  ['spark', '/partials/spark'],
+  ['vehicles', '/partials/vehicles'],
+];
+async function refreshFragments() {
+  if (document.hidden) return;
+  await Promise.all(FRAGMENTS.map(async ([id, url]) => {
+    try {
+      const r = await fetch(url, {cache: 'no-store'});
+      if (!r.ok) return;
+      const html = await r.text();
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = html;
+    } catch (e) { /* pipeline reiniciando: se reintenta al siguiente tick */ }
+  }));
+}
+setInterval(refreshFragments, 10000);
 
 async function poll() {
   try {

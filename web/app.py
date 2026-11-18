@@ -147,22 +147,37 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     # ------------------------------------------------------------------
     # Páginas
     # ------------------------------------------------------------------
+    def _context() -> dict:
+        return {
+            "current_db": _current_db(),
+            "counters": _counters(),
+            "coral_ok": _coral_ok(),
+            "events": _events(PAGE_SIZE, None, None),
+            "passages": _passages_today(),
+            "bars": _sparkline(_levels()),
+            "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
-        counters = _counters()
-        return templates.TemplateResponse(
-            request,
-            "dashboard.html",
-            {
-                "current_db": _current_db(),
-                "counters": counters,
-                "coral_ok": _coral_ok(),
-                "events": _events(PAGE_SIZE, None, None),
-                "passages": _passages_today(),
-                "bars": _sparkline(_levels()),
-                "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            },
-        )
+        return templates.TemplateResponse(request, "dashboard.html", _context())
+
+    # Fragmentos para auto-refresh sin recargar ni tocar el modal abierto.
+    @app.get("/partials/live", response_class=HTMLResponse)
+    def partial_live(request: Request):
+        return templates.TemplateResponse(request, "_live.html", _context())
+
+    @app.get("/partials/events", response_class=HTMLResponse)
+    def partial_events(request: Request):
+        return templates.TemplateResponse(request, "_events.html", _context())
+
+    @app.get("/partials/spark", response_class=HTMLResponse)
+    def partial_spark(request: Request):
+        return templates.TemplateResponse(request, "_spark.html", _context())
+
+    @app.get("/partials/vehicles", response_class=HTMLResponse)
+    def partial_vehicles(request: Request):
+        return templates.TemplateResponse(request, "_vehicles.html", _context())
 
     # ------------------------------------------------------------------
     # API

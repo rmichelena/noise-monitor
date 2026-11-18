@@ -1,0 +1,23 @@
+  <div class="grid">
+    <div class="metric">
+      <div class="v"><span id="db">{{ current_db if current_db is not none else "—" }}</span>
+        <span style="font-size:14px;color:var(--dim)">dB(A)</span></div>
+      <div class="l">nivel instantáneo</div>
+    </div>
+    <div class="metric">
+      <div class="v" id="events_today">{{ counters.events }}</div>
+      <div class="l">eventos hoy</div>
+    </div>
+    <div class="metric">
+      <div class="v" id="passages_today">{{ counters.passages }}</div>
+      <div class="l">vehículos hoy</div>
+    </div>
+    <div class="metric">
+      <div class="v"><span id="max_db">{{ counters.max_db if counters.max_db is not none else "—" }}</span></div>
+      <div class="l">máximo hoy dB(A)</div>
+    </div>
+    <div class="metric">
+      <div class="v" id="coral">{% if coral_ok is none %}?{% elif coral_ok %}<span class="ok">activo</span>{% else %}<span class="bad">sin TPU</span>{% endif %}</div>
+      <div class="l">detección visual</div>
+    </div>
+  </div>

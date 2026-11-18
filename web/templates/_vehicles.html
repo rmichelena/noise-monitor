@@ -1,0 +1,13 @@
+  {% if passages.by_class %}
+  <div class="grid">
+    {% for k, v in passages.by_class.items() %}
+    <div class="metric"><div class="v">{{ v }}</div><div class="l">{{ k }}</div></div>
+    {% endfor %}
+    {% for k, v in passages.by_dir.items() %}
+    <div class="metric"><div class="v">{{ v }}</div>
+      <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div></div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p style="color:var(--dim);font-size:13px">Sin pasajes registrados hoy.</p>
+  {% endif %}
