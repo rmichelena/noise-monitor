@@ -2,10 +2,35 @@
 
 Checklist ejecutable para el desarrollo del sistema. Cada item incluye contexto suficiente para que cualquier agente pueda retomarlo sin dependencia del anterior.
 
-**Servidor:** `ssh roberto@10.10.10.137`
-**Proyecto en servidor:** `~/noise-monitor/` (venv en `~/noise-monitor/venv/`)
+**Servidor:** `noise-monitor` (host físico, IP histórica `10.10.10.137`; hoy acceso local/SSH directo)
+**Proyecto:** `~/noise-monitor/` (venv en `~/noise-monitor/venv/`, repo git propio)
 **Docs de referencia:** Doc 3 (spec software), Doc 7 (setup node), Doc 8 (deployment)
-**Sync dev → server:** `rsync -avz scripts/ roberto@10.10.10.137:~/noise-monitor/scripts/`
+**Sync dev → server:** deprecado: el código vive y se commitea en el propio host.
+
+---
+
+## Estado real — 2026-11-18
+
+En producción desde el host, sin intervención manual:
+
+- `noise-monitor.service` (systemd, `Restart=always`, `MemoryMax=4G`): audio + YAMNet + tracker + clips.
+- `noise-report.timer`: reporte diario 07:00 (America/Lima) a `#noise-monitor` en Buzz.
+- Tabla `audio_levels`: una fila por minuto (media, pico, P95) para calibrar umbrales con datos.
+- Umbrales provisionales sin sonómetro: `peak_db 40`, `sustained_db 30`; `calibration_offset 0.0`.
+- Tracker ajustado a la franja visible del balcón: `max_distance 200`, `min_track_seconds 0.25`,
+  `min_displacement 150`. `vehicle_passages.direction` = `ltr`/`rtl`.
+
+Pendientes por prioridad:
+
+1. **Coral USB**: tras un reboot el TPU puede quedar sin enumerar (`error -62`) y solo revive
+   con replug físico. El software reintenta cada 60 s. Sin solución 100 % software en este
+   hardware (`uhubctl`: sin conmutación por puerto).
+2. **Calibración del micrófono** (Fase 3.1): requiere sonómetro de referencia.
+3. **Dashboard web** (Fase 2): nada implementado.
+4. **Generador de reportes HTML/PDF** (Fase 3.2): solo existe el resumen diario de texto.
+5. **Retención/purga de clips** (Fase 4.3): sin cron; el disco crece con cada evento.
+6. **Estimación de velocidad**: `speed.line1_y_pixel`/`line2_y_pixel` en config pero sin código.
+7. **Evaluación de modelo** (Fase 1.9): sigue con SSD MobileNet V2.
 
 ---
 
@@ -30,7 +55,8 @@ Mientras la cámara no esté instalada en el balcón, se usan videos de tráfico
 
 - [x] Instalar `yt-dlp` en el server: `pip install yt-dlp` (fuera del venv, o con pipx).
 - [x] Crear directorio `data/test_videos/` en el server.
-- [ ] Descargar 3-4 videos de tráfico con audio real (buscar "traffic camera live" o "urban traffic noise"):
+- [x] Descargar 3-4 videos de tráfico con audio real (buscar "traffic camera live" o "urban traffic noise"):
+  _(3 videos + 3 WAV en `data/test_videos/`, 2026-11-18)_
   ```bash
   ./scripts/download_test_videos.sh "URL1" "URL2" "URL3"
   # O manualmente:
@@ -39,7 +65,7 @@ Mientras la cámara no esté instalada en el balcón, se usan videos de tráfico
     --merge-output-format mp4 -o "traffic_%(id)s.mp4" "URL_DEL_VIDEO"
   ```
   Criterios de selección: ángulo similar al del balcón (vista cenital o semi-cenital de calle), con audio de tráfico real (motores, bocinas, etc.), variedad de condiciones (día, noche, lluvia si hay).
-- [ ] Verificar que los videos tienen audio: `ffprobe -i archivo.mp4` (debe mostrar stream de audio).
+- [x] Verificar que los videos tienen audio: `ffprobe -i archivo.mp4` (debe mostrar stream de audio).
 
 ### 0.5.2 Configuración para modo simulado
 
@@ -169,7 +195,8 @@ YAMNet clasifica el tipo de sonido (521 clases AudioSet) para diferenciar vehíc
 
 ### 1.10 Validación de pipeline
 
-- [ ] Test manual: reproducir video de tráfico frente a la cámara + ruido fuerte → verificar que se genera evento en SQLite con clip y clasificación de sonido.
+- [x] Test manual: reproducir video de tráfico frente a la cámara + ruido fuerte → verificar que se genera evento en SQLite con clip y clasificación de sonido.
+  _(2026-11-18: simulación end-to-end, 3 eventos, YAMNet `Vehicle 0.53`, clips H.264; cooldown verificado)_
 - [ ] Test con sonidos no vehiculares (ladrido, sirena, herramienta) → verificar que se registra sin correlación de video.
 - [ ] Test de 1 hora continua sin crashes ni memory leaks.
 
@@ -257,7 +284,8 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 
 ### 4.3 Servicio 24/7
 
-- [ ] Configurar systemd service (ver Doc 8 sección 3).
+- [x] Configurar systemd service (ver Doc 8 sección 3).
+  _(`noise-monitor.service` + `noise-report.timer` instalados y habilitados, 2026-11-18)_
 - [ ] Configurar crons: reportes semanales + purga de disco (ver Doc 8 secciones 5-6).
 - [ ] Prueba de 24h continuas: monitorear estabilidad USB, uso de CPU, crecimiento de disco.
 
