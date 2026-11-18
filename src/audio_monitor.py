@@ -179,7 +179,9 @@ class AudioMonitor:
         """Callback de sounddevice (modo device)."""
         if status:
             logger.warning("Audio status: %s", status)
-        timestamp = time_info.inputBufferAdcTime
+        # time_info.inputBufferAdcTime es relativo al arranque del stream en ALSA
+        # (epoch 1970 y desalineado con video). Usar reloj de pared.
+        timestamp = time.time()
         self._process_block(indata.copy(), timestamp)
 
     def _file_reader_loop(self):
