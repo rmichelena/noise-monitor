@@ -196,14 +196,15 @@ class EventManager:
         cur = conn.execute(
             """
             INSERT INTO vehicle_passages
-                (timestamp, timestamp_exit, vehicle_class, lane, detection_score, db_at_time)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (timestamp, timestamp_exit, vehicle_class, lane, direction, detection_score, db_at_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts_enter,
                 ts_exit,
                 passage["vehicle_class"],
                 passage.get("lane"),
+                passage.get("direction"),
                 passage.get("detection_score"),
                 round(db_now, 1),
             ),

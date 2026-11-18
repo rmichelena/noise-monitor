@@ -75,10 +75,15 @@ class CentroidTracker:
         if displacement < self.min_displacement:
             return  # stationary — parked vehicle or persistent false positive
 
+        # Sentido real de circulación: la etiqueta 'lane' solo indica en qué
+        # mitad del cuadro estaba el centroide, no por dónde iba el vehículo.
+        direction = "ltr" if ex > sx else "rtl"
+
         avg_score = float(np.mean(obj["scores"])) if obj["scores"] else 0.0
         self.passage_queue.put({
             "vehicle_class": obj["class"],
             "lane": obj["lane"],
+            "direction": direction,
             "detection_score": round(avg_score, 3),
             "timestamp_enter": obj["first_seen"],
             "timestamp_exit": obj["last_seen"],

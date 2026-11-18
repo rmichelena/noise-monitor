@@ -91,6 +91,16 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
             + " · ".join(f"{k} {v}" for k, v in by_class.most_common())
             + extra
         )
+        try:
+            dirs = Counter(p["direction"] for p in passages if p["direction"])
+        except (IndexError, KeyError):
+            dirs = Counter()  # base anterior a la columna direction
+        if dirs:
+            label = {"ltr": "izq→der", "rtl": "der→izq"}
+            lines.append(
+                "**Sentido:** "
+                + " · ".join(f"{label.get(k, k)} {v}" for k, v in dirs.most_common())
+            )
 
     # Nivel de fondo (una fila por minuto, exista o no trigger)
     try:

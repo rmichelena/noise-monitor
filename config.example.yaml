@@ -54,10 +54,10 @@ web:
 
 # Centroid tracker para registro continuo de vehículos
 tracker:
-  max_distance: 80        # px, distancia máxima entre centroides para match
+  max_distance: 200
   max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
-  min_track_seconds: 2.0  # duración mínima para contar como pasaje real (filtra flickering)
-  min_displacement: 60    # px, desplazamiento mínimo del centroide para contar (filtra estacionados)
+  min_track_seconds: 0.25
+  min_displacement: 150
 
 # Clasificador de audio (YAMNet)
 audio_classifier:

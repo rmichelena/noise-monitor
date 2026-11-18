@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS vehicle_passages (
     timestamp TEXT NOT NULL,           -- ISO 8601 del momento en que el vehículo entró al cuadro
     timestamp_exit TEXT,               -- ISO 8601 cuando salió del cuadro
     vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
-    lane TEXT,                         -- 'left', 'right'
+    lane TEXT,                         -- mitad de imagen: 'left', 'right'
+    direction TEXT,                    -- sentido real: 'ltr' o 'rtl'
     detection_score REAL,              -- Score promedio del modelo durante el tracking
     db_at_time REAL,                   -- dB(A) al momento de la detección
     noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
@@ -38,6 +39,9 @@ CREATE TABLE IF NOT EXISTS noise_events (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
 );
+
+-- Migración para bases existentes (falla en silencio si ya existe)
+ALTER TABLE vehicle_passages ADD COLUMN direction TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);
