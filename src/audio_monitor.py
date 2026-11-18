@@ -7,9 +7,11 @@ Soporta modo device (micrófono real) y file (WAV para desarrollo simulado).
 
 import logging
 import os
+import sqlite3
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING
@@ -18,7 +20,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 
-from .utils import apply_a_weighting, load_config, rms_to_db
+from .utils import apply_a_weighting, load_config, resolve_path, rms_to_db
 
 if TYPE_CHECKING:
     from .audio_classifier import AudioClassifier
@@ -104,6 +106,12 @@ class AudioMonitor:
         self._stream: sd.InputStream | None = None
         self._thread: threading.Thread | None = None
 
+        # Nivel de fondo por minuto (tabla audio_levels): sirve para calibrar
+        # umbrales con datos reales, incluidos los minutos sin trigger.
+        self.db_path = str(resolve_path(self.config, "database", self.base_dir))
+        self._level_minute: int | None = None
+        self._level_vals: list[float] = []
+
     @property
     def current_db(self) -> float:
         """Nivel dB actual (thread-safe)."""
@@ -126,6 +134,8 @@ class AudioMonitor:
 
         with self._lock:
             self._current_db = db
+
+        self._accumulate_level(db, timestamp)
 
         # Guardar en buffer (timestamp, bloque raw para clips)
         self.audio_buffer.append((timestamp, block.copy()))
@@ -165,6 +175,41 @@ class AudioMonitor:
                     logger.exception("Error en clasificación YAMNet")
 
             self.event_queue.put(event)
+
+    def _accumulate_level(self, db: float, timestamp: float):
+        """Agrega el nivel del bloque al minuto en curso; persiste al cambiar."""
+        minute = int(timestamp // 60)
+        if self._level_minute is None:
+            self._level_minute = minute
+        elif minute != self._level_minute:
+            self._flush_level_minute()
+            self._level_minute = minute
+            self._level_vals = []
+        self._level_vals.append(db)
+
+    def _flush_level_minute(self):
+        """Escribe el resumen del minuto cerrado en audio_levels."""
+        vals = self._level_vals
+        if not vals or self._level_minute is None:
+            return
+        label = datetime.fromtimestamp(self._level_minute * 60).strftime("%Y-%m-%dT%H:%M")
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=5)
+            conn.execute(
+                "INSERT OR REPLACE INTO audio_levels (minute, db_avg, db_max, db_p95, blocks)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    label,
+                    sum(vals) / len(vals),
+                    max(vals),
+                    float(np.percentile(vals, 95)),
+                    len(vals),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            logger.exception("No se pudo guardar nivel de audio del minuto %s", label)
 
     def _get_classification_window(self, duration_s: float = 1.0) -> np.ndarray | None:
         """Extract the last ~duration_s of audio from the buffer for YAMNet."""
@@ -287,4 +332,5 @@ class AudioMonitor:
             self._stream.close()
             self._stream = None
         self._thread = None
+        self._flush_level_minute()
         logger.info("AudioMonitor detenido")

@@ -5,6 +5,7 @@ Arranca AudioMonitor (con YAMNet), VideoMonitor (con tracker) y EventManager en 
 """
 
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -64,12 +65,23 @@ def main():
     video = VideoMonitor(config=config, base_dir=base_dir)
     event_mgr = EventManager(audio, video, config=config, base_dir=base_dir)
 
+    stopped = False
+
     def shutdown(signum=None, frame=None):
+        # Handler de señal y bloque finally convergen aquí; sin el guard el
+        # segundo stop libera cv2/PortAudio dos veces y el proceso muere por
+        # SIGSEGV (visible como core-dump en systemd). os._exit evita además
+        # el desmontaje de ~2 GB de frames al final.
+        nonlocal stopped
+        if stopped:
+            return
+        stopped = True
         logger.info("Apagando...")
         audio.stop()
         video.stop()
         event_mgr.stop()
-        sys.exit(0)
+        logging.shutdown()
+        os._exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

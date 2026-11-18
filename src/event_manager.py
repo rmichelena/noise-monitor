@@ -94,6 +94,10 @@ class EventManager:
         self.post_seconds = int(buffer_cfg["post_event_seconds"])
         self.peak_db = float(self.config["triggers"]["peak_db"])
         self.correlation_db = float(self.config["triggers"]["correlation_db"])
+        # Espaciado mínimo entre eventos: evita guardar un clip por segundo
+        # cuando hay tráfico continuo (cada clip cuesta CPU y disco).
+        self.cooldown_seconds = float(self.config["triggers"].get("cooldown_seconds", 0))
+        self._last_event_ts = 0.0
 
         self.db_path = str(resolve_path(self.config, "database", self.base_dir))
         self.clips_dir = resolve_path(self.config, "clips", self.base_dir)
@@ -153,8 +157,13 @@ class EventManager:
                     "ffmpeg", "-y",
                     "-i", video_path,
                     "-i", f_audio.name,
-                    "-c:v", "copy",
+                    # Recompresión: el mp4v intermedio pesa ~5 MB/s a 1080p.
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "30",
+                    "-pix_fmt", "yuv420p",
                     "-c:a", "aac",
+                    "-b:a", "64k",
                     "-shortest",
                     str(clip_path),
                 ],
@@ -246,6 +255,9 @@ class EventManager:
         db_avg = trigger.get("db_avg", db_max)
         timestamp = trigger["timestamp"]
 
+        if self.cooldown_seconds > 0 and timestamp - self._last_event_ts < self.cooldown_seconds:
+            return
+
         # YAMNet classification (may be absent if classifier not loaded)
         sound_class = trigger.get("sound_class")
         sound_category = trigger.get("sound_category", "other")
@@ -322,6 +334,7 @@ class EventManager:
 
         conn.commit()
         conn.close()
+        self._last_event_ts = timestamp
 
         logger.info(
             "NoiseEvent #%d: %.1f dB, %s/%s (%s) clip=%s @ %s",

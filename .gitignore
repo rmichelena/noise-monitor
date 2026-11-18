@@ -33,3 +33,6 @@ models/*.tflite
 agent-tools/
 agent-transcripts/
 .cursor/
+
+# Scratch local
+.scratch/

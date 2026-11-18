@@ -1,0 +1,10 @@
+[Unit]
+Description=Noise Monitor - reporte diario de la noche a las 07:00 (Lima)
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+Unit=noise-report.service
+
+[Install]
+WantedBy=timers.target

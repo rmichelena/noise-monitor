@@ -17,6 +17,7 @@ triggers:
   sustained_db: 70            # Umbral de persistencia
   sustained_duration_ms: 1500 # Tiempo mínimo sobre umbral
   correlation_db: 65         # Umbral si hay vehículo visible
+  cooldown_seconds: 30       # Espaciado mínimo entre eventos guardados
 
 # Parámetros de video (cámara USB ELP vía OpenCV)
 video:

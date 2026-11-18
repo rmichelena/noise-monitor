@@ -1,0 +1,13 @@
+[Unit]
+Description=Noise Monitor - reporte de turno publicado en Buzz
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=roberto
+Group=roberto
+WorkingDirectory=/home/roberto/noise-monitor
+Environment=BUZZ_RELAY_URL=wss://buzz.infinitek.pe
+LoadCredential=buzz-key:/home/roberto/buzz/credentials/noise.key
+ExecStart=/bin/sh -c 'export BUZZ_PRIVATE_KEY="$(cat "$CREDENTIALS_DIRECTORY/buzz-key")"; exec /home/roberto/noise-monitor/venv/bin/python scripts/nightly_report.py --post --hours 10 --end-hour 7'

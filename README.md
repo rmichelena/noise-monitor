@@ -124,6 +124,25 @@ src/
 scripts/                Herramientas operativas y tests de hardware
 ```
 
+## Operación
+
+```bash
+sudo cp deploy/noise-monitor.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now noise-monitor     # pipeline 24/7, Restart=always
+sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
+```
+
+- `noise-monitor.service` corre el pipeline con reinicio automático. El buffer
+  de video (10 s a 1080p30) ocupa ~1.9 GB de RSS; el límite del unit es 4 GB.
+- Si el Coral no enumera (cable, puerto, alimentación), `VideoMonitor` registra
+  el error y sigue **sin detección visual**: audio, YAMNet y clips continúan.
+  Revisar con `lsusb` (`1a6e:089a` o `18d1:9302`) y `dmesg` (`error -62`).
+- `scripts/nightly_report.py` resume la ventana nocturna (10 h por defecto) y
+  `noise-report.service` lo publica en el canal usando la clave del agente
+  cargada como *systemd credential* (`/home/roberto/buzz/credentials/noise.key`).
+- Logs: `journalctl -u noise-monitor -f`.
+
 ## Privacidad y uso responsable
 
 El sistema graba video y audio de una vía pública. Los clips pueden contener

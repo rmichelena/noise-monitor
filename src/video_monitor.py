@@ -106,8 +106,24 @@ class VideoMonitor:
             return list(self._recent_detections)
 
     def _init_interpreter(self):
-        """Inicializa el intérprete TFLite con delegate Edge TPU."""
-        delegate = load_delegate("libedgetpu.so.1", options={"device": "usb"})
+        """Inicializa el intérprete TFLite con delegate Edge TPU.
+
+        Si el acelerador no está disponible (ausente, cable, puerto USB),
+        el pipeline sigue vivo sin detección visual en vez de entrar en
+        bucle de reinicio: el audio y la clasificación YAMNet son la
+        evidencia principal y no dependen del Coral.
+        """
+        try:
+            delegate = load_delegate("libedgetpu.so.1", options={"device": "usb"})
+        except Exception:
+            logger.error(
+                "VideoMonitor: Edge TPU no disponible (libedgetpu no carga). "
+                "Detección visual DESACTIVADA hasta que el Coral vuelva; "
+                "la captura de audio sigue activa."
+            )
+            self._interpreter = None
+            return
+
         self._interpreter = Interpreter(
             model_path=str(self.model_path),
             experimental_delegates=[delegate],

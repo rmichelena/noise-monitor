@@ -50,3 +50,17 @@ CREATE INDEX IF NOT EXISTS idx_ne_db ON noise_events(db_max);
 INSERT OR IGNORE INTO noise_events (id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms)
     SELECT id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms
     FROM events WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='events');
+
+-- Nivel de fondo por minuto: permite calibrar umbrales con datos reales
+-- sin depender de clips (que solo existen cuando ya se disparó un evento).
+CREATE TABLE IF NOT EXISTS audio_levels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    minute TEXT NOT NULL UNIQUE,      -- ISO 8601 local, 'YYYY-MM-DDTHH:MM'
+    db_avg REAL NOT NULL,
+    db_max REAL NOT NULL,
+    db_p95 REAL,
+    blocks INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_al_minute ON audio_levels(minute);
