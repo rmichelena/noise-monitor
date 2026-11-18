@@ -1,0 +1,12 @@
+[Unit]
+Description=Noise Monitor - purga de clips y niveles antiguos
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=roberto
+Group=roberto
+WorkingDirectory=/home/roberto/noise-monitor
+ExecStart=/home/roberto/noise-monitor/venv/bin/python scripts/purge.py
+Nice=10
+IOSchedulingClass=idle

@@ -28,7 +28,7 @@ Pendientes por prioridad:
 2. **Calibración del micrófono** (Fase 3.1): requiere sonómetro de referencia.
 3. **Dashboard web** (Fase 2): hecho el mínimo (en vivo, eventos, clips); faltan páginas de eventos/reportes y PDF.
 4. **Generador de reportes HTML/PDF** (Fase 3.2): solo existe el resumen diario de texto.
-5. **Retención/purga de clips** (Fase 4.3): sin cron; el disco crece con cada evento.
+5. **Retención/purga de clips** (Fase 4.3): `noise-purge.timer` domingos 04:00 (clips >30 días, `audio_levels` >400 días).
 6. **Estimación de velocidad**: `speed.line1_y_pixel`/`line2_y_pixel` en config pero sin código.
 7. **Evaluación de modelo** (Fase 1.9): sigue con SSD MobileNet V2.
 
@@ -286,7 +286,7 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 
 - [x] Configurar systemd service (ver Doc 8 sección 3).
   _(`noise-monitor.service` + `noise-report.timer` instalados y habilitados, 2026-11-18)_
-- [ ] Configurar crons: reportes semanales + purga de disco (ver Doc 8 secciones 5-6).
+- [x] Configurar crons: reporte diario (`noise-report.timer`) y purga semanal (`noise-purge.timer`).
 - [ ] Prueba de 24h continuas: monitorear estabilidad USB, uso de CPU, crecimiento de disco.
 
 ### 4.4 Operación continua

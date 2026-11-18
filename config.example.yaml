@@ -116,3 +116,8 @@ noise_priority:
   car: 3
   bicycle: 4
   person: 5
+
+# Retención de datos (scripts/purge.py, timer semanal)
+retention:
+  clip_days: 30
+  levels_days: 400
