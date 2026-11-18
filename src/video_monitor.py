@@ -76,6 +76,8 @@ class VideoMonitor:
         self.labels = load_labels(self.labels_path)
 
         self._interpreter: Interpreter | None = None
+        self._tpu_retry_at = 0.0  # epoch del próximo intento si el TPU falta
+        self._tpu_retry_every = 60.0
         self._input_index = 0
         self._input_shape = (300, 300, 3)
         self._output_indices: list[int] = []
@@ -105,24 +107,26 @@ class VideoMonitor:
         with self._lock:
             return list(self._recent_detections)
 
-    def _init_interpreter(self):
+    def _init_interpreter(self) -> bool:
         """Inicializa el intérprete TFLite con delegate Edge TPU.
 
         Si el acelerador no está disponible (ausente, cable, puerto USB),
         el pipeline sigue vivo sin detección visual en vez de entrar en
         bucle de reinicio: el audio y la clasificación YAMNet son la
-        evidencia principal y no dependen del Coral.
+        evidencia principal y no dependen del Coral. `_ensure_interpreter`
+        reintenta cada minuto, así que un replug se recupera en caliente.
         """
         try:
             delegate = load_delegate("libedgetpu.so.1", options={"device": "usb"})
         except Exception:
             logger.error(
                 "VideoMonitor: Edge TPU no disponible (libedgetpu no carga). "
-                "Detección visual DESACTIVADA hasta que el Coral vuelva; "
-                "la captura de audio sigue activa."
+                "Detección visual DESACTIVADA; reintento cada %ds. "
+                "La captura de audio sigue activa.",
+                int(self._tpu_retry_every),
             )
             self._interpreter = None
-            return
+            return False
 
         self._interpreter = Interpreter(
             model_path=str(self.model_path),
@@ -143,6 +147,19 @@ class VideoMonitor:
             self.model_path.name,
             self._input_shape,
         )
+        return True
+
+    def _ensure_interpreter(self):
+        """Reintenta cargar el TPU como máximo una vez por minuto."""
+        if self._interpreter is not None:
+            return
+        now = time.time()
+        if now < self._tpu_retry_at:
+            return
+        self._tpu_retry_at = now + self._tpu_retry_every
+        if self._init_interpreter():
+            self._tpu_retry_at = 0.0
+            logger.info("VideoMonitor: Edge TPU recuperado; detección visual activa")
 
     def _run_inference(self, frame: np.ndarray) -> list[dict]:
         """Ejecuta inferencia y retorna lista de detecciones sobre umbral."""
@@ -204,7 +221,8 @@ class VideoMonitor:
         if not self._cap.isOpened():
             raise RuntimeError(f"No se pudo abrir cámara {self.source}")
 
-        self._init_interpreter()
+        if not self._init_interpreter():
+            self._tpu_retry_at = time.time() + self._tpu_retry_every
         self._running = True
         self._frame_count = 0
         logger.info(
@@ -239,6 +257,7 @@ class VideoMonitor:
 
         self._frame_count += 1
         if self._frame_count % self.inference_interval == 0:
+            self._ensure_interpreter()
             detections = self._run_inference(frame)
             with self._lock:
                 self._recent_detections = detections

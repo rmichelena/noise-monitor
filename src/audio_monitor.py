@@ -13,7 +13,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from queue import Queue
+from queue import Full, Queue
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -112,6 +112,12 @@ class AudioMonitor:
         self._level_minute: int | None = None
         self._level_vals: list[float] = []
 
+        # YAMNet corre en un thread aparte: clasificar dentro del callback de
+        # PortAudio (~100 ms) provoca "input overflow" justo en el evento que
+        # hay que documentar, perdiendo muestras.
+        self._classify_queue: Queue = Queue(maxsize=8)
+        self._classifier_thread: threading.Thread | None = None
+
     @property
     def current_db(self) -> float:
         """Nivel dB actual (thread-safe)."""
@@ -160,21 +166,19 @@ class AudioMonitor:
         if triggered:
             event = {"type": trigger_type, "db": db, "timestamp": timestamp, "db_avg": db}
 
-            # YAMNet classification (~1s window from buffer)
+            # YAMNet (~1 s de audio) se encola para el thread clasificador.
             if self._classifier:
-                try:
-                    window = self._get_classification_window()
-                    if window is not None:
-                        sc, cat, score = self._classifier.classify(
-                            window, source_sr=self.sample_rate
-                        )
-                        event["sound_class"] = sc
-                        event["sound_category"] = cat
-                        event["sound_confidence"] = score
-                except Exception:
-                    logger.exception("Error en clasificación YAMNet")
-
-            self.event_queue.put(event)
+                window = self._get_classification_window()
+                if window is not None:
+                    try:
+                        self._classify_queue.put_nowait((event, window))
+                    except Full:
+                        logger.warning("Cola de clasificación llena; evento sin clasificar")
+                        self.event_queue.put(event)
+                else:
+                    self.event_queue.put(event)
+            else:
+                self.event_queue.put(event)
 
     def _accumulate_level(self, db: float, timestamp: float):
         """Agrega el nivel del bloque al minuto en curso; persiste al cambiar."""
@@ -210,6 +214,24 @@ class AudioMonitor:
             conn.close()
         except Exception:
             logger.exception("No se pudo guardar nivel de audio del minuto %s", label)
+
+    def _classify_loop(self):
+        """Clasifica eventos fuera del callback de audio."""
+        while True:
+            item = self._classify_queue.get()
+            if item is None:
+                return
+            event, window = item
+            try:
+                sc, cat, score = self._classifier.classify(
+                    window, source_sr=self.sample_rate
+                )
+                event["sound_class"] = sc
+                event["sound_category"] = cat
+                event["sound_confidence"] = score
+            except Exception:
+                logger.exception("Error en clasificación YAMNet")
+            self.event_queue.put(event)
 
     def _get_classification_window(self, duration_s: float = 1.0) -> np.ndarray | None:
         """Extract the last ~duration_s of audio from the buffer for YAMNet."""
@@ -298,6 +320,12 @@ class AudioMonitor:
 
         self._running = True
 
+        if self._classifier and not self._classifier_thread:
+            self._classifier_thread = threading.Thread(
+                target=self._classify_loop, name="yamnet", daemon=True
+            )
+            self._classifier_thread.start()
+
         if self.audio_source == "file" and self.audio_file_path:
             self._thread = threading.Thread(target=self._file_reader_loop, daemon=True)
             self._thread.start()
@@ -332,5 +360,9 @@ class AudioMonitor:
             self._stream.close()
             self._stream = None
         self._thread = None
+        if self._classifier_thread:
+            self._classify_queue.put(None)
+            self._classifier_thread.join(timeout=5)
+            self._classifier_thread = None
         self._flush_level_minute()
         logger.info("AudioMonitor detenido")
