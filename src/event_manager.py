@@ -177,7 +177,13 @@ class EventManager:
             Path(f_audio.name).unlink(missing_ok=True)
             Path(video_path).unlink(missing_ok=True)
 
-        return str(Path("data") / "clips" / clip_filename), duration_ms
+        # Ruta relativa al proyecto (antes estaba fija a data/clips, que solo
+        # coincide por casualidad con la config por defecto).
+        try:
+            stored = clip_path.relative_to(self.base_dir)
+        except ValueError:
+            stored = clip_path
+        return str(stored), duration_ms
 
     # ------------------------------------------------------------------
     # Passage processing (from tracker via VideoMonitor.passage_queue)
