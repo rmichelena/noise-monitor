@@ -70,6 +70,8 @@ class VideoMonitor:
         self.buffer_maxlen = int(self.video_seconds * self.framerate * 1.5)
         self._min_frame_interval = 1.0 / self.framerate
         self._last_stored_ts = 0.0
+        self._frame_stride = 1   # 1 de cada N frames leídos (cámara > target)
+        self._read_count = 0
 
         self.video_buffer: deque[tuple[float, np.ndarray]] = deque(maxlen=self.buffer_maxlen)
         self._recent_detections: list[dict] = []
@@ -213,6 +215,17 @@ class VideoMonitor:
 
         return detections
 
+    def _measure_camera_fps(self, frames: int = 30) -> float:
+        """Estima los fps reales de la cámara leyendo frames consecutivos."""
+        t0 = time.time()
+        n = 0
+        while n < frames:
+            if not self._cap.read()[0]:
+                break
+            n += 1
+        dt = time.time() - t0
+        return (n / dt) if dt > 0 and n else float(self.framerate)
+
     def start(self):
         """Inicia captura e inferencia."""
         if self._running:
@@ -226,6 +239,15 @@ class VideoMonitor:
 
         if not self._cap.isOpened():
             raise RuntimeError(f"No se pudo abrir cámara {self.source}")
+
+        if not self._is_file_source:
+            measured = self._measure_camera_fps()
+            self._frame_stride = max(1, round(measured / self.framerate))
+            logger.info(
+                "Cámara entrega %.1f fps; se guarda 1 de cada %d frame(s)",
+                measured,
+                self._frame_stride,
+            )
 
         if not self._init_interpreter():
             self._tpu_retry_at = time.time() + self._tpu_retry_every
@@ -257,6 +279,10 @@ class VideoMonitor:
                     return False
             else:
                 return False
+
+        self._read_count += 1
+        if self._frame_stride > 1 and self._read_count % self._frame_stride:
+            return True
 
         timestamp = time.time()
         # La cámara puede entregar 60 fps aunque se pida 30: descartar los
