@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Noise Monitor — en vivo{% endblock %}
+
+{% block content %}
+<section>
+  <h2>Ahora</h2>
+  <div class="grid">
+    <div class="metric">
+      <div class="v"><span id="db">{{ current_db if current_db is not none else "—" }}</span>
+        <span style="font-size:14px;color:var(--dim)">dB(A)</span></div>
+      <div class="l">nivel instantáneo</div>
+    </div>
+    <div class="metric">
+      <div class="v" id="events_today">{{ counters.events }}</div>
+      <div class="l">eventos hoy</div>
+    </div>
+    <div class="metric">
+      <div class="v" id="passages_today">{{ counters.passages }}</div>
+      <div class="l">vehículos hoy</div>
+    </div>
+    <div class="metric">
+      <div class="v"><span id="max_db">{{ counters.max_db if counters.max_db is not none else "—" }}</span></div>
+      <div class="l">máximo hoy dB(A)</div>
+    </div>
+    <div class="metric">
+      <div class="v" id="coral">{% if coral_ok is none %}?{% elif coral_ok %}<span class="ok">activo</span>{% else %}<span class="bad">sin TPU</span>{% endif %}</div>
+      <div class="l">detección visual</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Fondo sonoro · últimos 120 minutos (pico por minuto)</h2>
+  <svg class="spark" viewBox="0 0 100 60" preserveAspectRatio="none" role="img"
+       aria-label="barras de nivel sonoro por minuto">
+    {% for b in bars %}
+    <rect x="{{ b.x }}" y="{{ 60 - b.h }}" width="{{ b.w }}" height="{{ b.h }}"></rect>
+    {% endfor %}
+  </svg>
+  {% if not bars %}<p style="color:var(--dim);font-size:13px">Sin datos todavía.</p>{% endif %}
+</section>
+
+<section>
+  <h2>Vehículos hoy</h2>
+  {% if passages.by_class %}
+  <div class="grid">
+    {% for k, v in passages.by_class.items() %}
+    <div class="metric"><div class="v">{{ v }}</div><div class="l">{{ k }}</div></div>
+    {% endfor %}
+    {% for k, v in passages.by_dir.items() %}
+    <div class="metric"><div class="v">{{ v }}</div>
+      <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div></div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p style="color:var(--dim);font-size:13px">Sin pasajes registrados hoy.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Últimos eventos de ruido</h2>
+  {% if events %}
+  <table>
+    <thead>
+      <tr><th>hora</th><th>dB(A)</th><th>sonido</th><th>vehículo</th><th>conf.</th><th>clip</th></tr>
+    </thead>
+    <tbody>
+    {% for e in events %}
+      <tr>
+        <td class="num">{{ e.timestamp[11:19] }}</td>
+        <td class="num">{{ "%.1f"|format(e.db_max) }}</td>
+        <td><span class="tag {{ 'vehicle' if e.sound_category == 'vehicle' else '' }}">{{ e.sound_class or e.sound_category or "?" }}</span></td>
+        <td>{{ e.vehicle_class or "—" }}{% if e.direction %} <span class="tag">{{ e.direction }}</span>{% endif %}</td>
+        <td class="num">{{ "%.2f"|format(e.sound_confidence) if e.sound_confidence else "—" }}</td>
+        <td>{% if e.has_clip %}<a class="a" href="/api/clips/{{ e.id }}" target="_blank">▶ ver</a>{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--dim);font-size:13px">Sin eventos registrados todavía.</p>
+  {% endif %}
+</section>
+
+<script>
+async function poll() {
+  try {
+    const r = await fetch('/api/live', {cache: 'no-store'});
+    const d = await r.json();
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('db', d.db === null ? '—' : d.db);
+    set('events_today', d.events_today);
+    set('passages_today', d.passages_today);
+    set('max_db', d.max_db_today === null ? '—' : d.max_db_today);
+    const coral = document.getElementById('coral');
+    if (coral && d.coral_ok !== null) {
+      coral.textContent = d.coral_ok ? 'activo' : 'sin TPU';
+      coral.className = d.coral_ok ? 'ok' : 'bad';
+    }
+  } catch (e) { /* el pipeline puede estar reiniciando */ }
+}
+setInterval(poll, 2000);
+</script>
+{% endblock %}

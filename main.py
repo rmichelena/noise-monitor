@@ -52,6 +52,36 @@ def _load_audio_classifier(config: dict, base_dir: Path):
     )
 
 
+def _start_web(config: dict, base_dir: Path, audio, video, logger):
+    """Arranca el dashboard en un thread. Sin dependencias, sigue sin web."""
+    web_cfg = config.get("web") or {}
+    if not web_cfg.get("enabled", True):
+        logger.info("Dashboard deshabilitado en config")
+        return None
+
+    try:
+        import threading
+
+        import uvicorn
+
+        from web.app import create_app
+    except ImportError as exc:
+        logger.error("Dashboard no disponible (falta dependencia): %s", exc)
+        return None
+
+    host = web_cfg.get("host", "0.0.0.0")
+    port = int(web_cfg.get("port", 8000))
+    app = create_app(
+        config=config, base_dir=base_dir, audio_monitor=audio, video_monitor=video
+    )
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=host, port=port, log_level="warning")
+    )
+    threading.Thread(target=server.run, daemon=True, name="web").start()
+    logger.info("Dashboard disponible en http://%s:%d", host, port)
+    return server
+
+
 def main():
     setup_logging()
     logger = logging.getLogger("main")
@@ -66,6 +96,7 @@ def main():
     event_mgr = EventManager(audio, video, config=config, base_dir=base_dir)
 
     stopped = False
+    web_server = None
 
     def shutdown(signum=None, frame=None):
         # Handler de señal y bloque finally convergen aquí; sin el guard el
@@ -77,6 +108,8 @@ def main():
             return
         stopped = True
         logger.info("Apagando...")
+        if web_server:
+            web_server.should_exit = True
         audio.stop()
         video.stop()
         event_mgr.stop()
@@ -98,6 +131,8 @@ def main():
 
     t_video = threading.Thread(target=video.run_loop, daemon=True)
     t_video.start()
+
+    web_server = _start_web(config, base_dir, audio, video, logger)
 
     try:
         while True:

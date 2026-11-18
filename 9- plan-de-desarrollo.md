@@ -26,7 +26,7 @@ Pendientes por prioridad:
    con replug físico. El software reintenta cada 60 s. Sin solución 100 % software en este
    hardware (`uhubctl`: sin conmutación por puerto).
 2. **Calibración del micrófono** (Fase 3.1): requiere sonómetro de referencia.
-3. **Dashboard web** (Fase 2): nada implementado.
+3. **Dashboard web** (Fase 2): hecho el mínimo (en vivo, eventos, clips); faltan páginas de eventos/reportes y PDF.
 4. **Generador de reportes HTML/PDF** (Fase 3.2): solo existe el resumen diario de texto.
 5. **Retención/purga de clips** (Fase 4.3): sin cron; el disco crece con cada evento.
 6. **Estimación de velocidad**: `speed.line1_y_pixel`/`line2_y_pixel` en config pero sin código.
@@ -208,13 +208,13 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 
 ### 2.1 Estructura FastAPI
 
-- [ ] Implementar `web/app.py`: aplicación FastAPI, montaje de static files y templates Jinja2.
-- [ ] Implementar `web/routes.py`: endpoints de páginas y API.
+- [x] Implementar `web/app.py`: aplicación FastAPI, montaje de static files y templates Jinja2.
+- [x] Endpoints de páginas y API dentro de `web/app.py` (`/`, `/api/live`, `/api/events`, `/api/clips/{id}`, `/api/stats`, `/api/health`).
 
 ### 2.2 Páginas del dashboard (HTMX)
 
-- [ ] `templates/base.html`: layout base con nav, CSS (Pico CSS o similar para estilo sin build step).
-- [ ] `templates/dashboard.html`: página principal con:
+- [x] `templates/base.html`: layout base con nav, CSS (Pico CSS o similar para estilo sin build step).
+- [x] `templates/dashboard.html`: página principal con:
   - Indicador de dB actual (polling HTMX cada 1s a `/api/current-db`)
   - Contador de eventos de hoy / esta semana
   - Tabla de últimos 20 eventos con: timestamp, categoría de sonido, clase vehículo (si aplica), dB, confianza, botón reproducir clip
@@ -225,23 +225,23 @@ El objetivo es poder ver qué está pasando desde un browser en la red local (`h
 
 ### 2.3 API REST
 
-- [ ] `GET /api/current-db` → nivel dB actual (JSON)
-- [ ] `GET /api/events?limit=N&offset=M&category=X&vehicle_class=Y&min_db=Z` → lista de eventos
+- [x] `GET /api/live` → nivel dB actual + contadores (JSON)
+- [x] `GET /api/events?limit=N&category=X&min_db=Z` → lista de eventos
 - [ ] `GET /api/events/{id}` → detalle de un evento
-- [ ] `GET /api/clips/{id}` → streaming del clip de video
-- [ ] `GET /api/stats?period=day|week|month` → estadísticas agregadas
+- [x] `GET /api/clips/{id}` → streaming del clip de video
+- [x] `GET /api/stats` → agregados de 7 días y por categoría
 - [ ] `POST /api/reports/generate` → genera reporte y retorna URL de descarga
 
 ### 2.4 Integración con pipeline
 
-- [ ] Uvicorn se arranca dentro de `main.py` como thread adicional (o subprocess).
-- [ ] El web app lee de SQLite (read-only para la mayoría de endpoints).
-- [ ] `current_db` se expone desde AudioMonitor vía variable compartida thread-safe.
+- [x] Uvicorn se arranca dentro de `main.py` como thread adicional.
+- [x] El web app lee de SQLite en modo `mode=ro`.
+- [x] `current_db` se expone desde AudioMonitor vía propiedad thread-safe.
 
 ### 2.5 Validación
 
-- [ ] Acceder a `http://10.10.10.137:8000` desde un browser y verificar que se ven datos en vivo.
-- [ ] Reproducir un clip desde la tabla de eventos.
+- [x] Acceder a `http://<host>:8000` y verificar datos en vivo.
+- [x] Reproducir un clip desde la tabla de eventos (`/api/clips/{id}`, 200 video/mp4).
 - [ ] Generar un reporte PDF de prueba.
 
 ---

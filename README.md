@@ -26,9 +26,15 @@ Implementado en `src/`:
 - Persistencia en SQLite (`vehicle_passages`, `noise_events`), con clips MP4
   ±5 s por evento (buffer circular + `ffmpeg`).
 
-Documentado en los PRD pero **todavía no implementado**: dashboard web
-(FastAPI + HTMX) y generación automática de reportes (`report.py`). Las
-dependencias ya están en `requirements.txt`.
+Implementado además:
+
+- Dashboard web (`web/`, FastAPI + Jinja2) servido por el propio pipeline en
+  el puerto 8000: nivel en vivo, fondo sonoro por minuto, contadores del día,
+  últimos eventos y clips.
+- Reporte de turno (`scripts/nightly_report.py`) publicado a diario en Buzz
+  mediante `noise-report.timer`.
+
+Pendiente: generación de reportes HTML/PDF y páginas de eventos/reportes.
 
 ## Hardware de referencia
 
@@ -141,6 +147,9 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
 - `scripts/nightly_report.py` resume la ventana nocturna (10 h por defecto) y
   `noise-report.service` lo publica en el canal usando la clave del agente
   cargada como *systemd credential* (`/home/roberto/buzz/credentials/noise.key`).
+- Dashboard: `http://<host>:8000` (host/puerto en `config.yaml` → `web`). Lee SQLite
+  en solo-lectura y muestra dB instantáneo, pico por minuto de las últimas 2 h,
+  contadores del día y los últimos eventos con enlace a su clip.
 - Logs: `journalctl -u noise-monitor -f`.
 
 ## Privacidad y uso responsable
