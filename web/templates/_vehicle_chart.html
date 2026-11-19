@@ -13,6 +13,7 @@
 {% if not chart.bars %}
 <p style="color:var(--dim);font-size:13px">Sin pasajes en las últimas 2 h.</p>
 {% endif %}
+{% include "_ruler.html" %}
 <div class="legend">
   <span><i style="background:#4cc2ff"></i>auto</span>
   <span><i style="background:#ffb020"></i>camión / bus</span>

@@ -1,7 +1,21 @@
-  <svg class="spark" viewBox="0 0 100 60" preserveAspectRatio="none" role="img"
-       aria-label="barras de nivel sonoro por minuto">
-    {% for b in bars %}
-    <rect x="{{ b.x }}" y="{{ 60 - b.h }}" width="{{ b.w }}" height="{{ b.h }}"></rect>
-    {% endfor %}
-  </svg>
-  {% if not bars %}<p style="color:var(--dim);font-size:13px">Sin datos todavía.</p>{% endif %}
+{% set chart = audio_chart %}
+<svg class="spark" viewBox="0 0 100 60" preserveAspectRatio="none" role="img"
+     aria-label="pico de nivel sonoro por minuto">
+  {% for b in chart.bars %}
+  <g>
+    <title>{{ b.minute }} · {{ b.value }} dB(A)</title>
+    <rect x="{{ b.x }}" y="{{ 60 - b.h }}" width="{{ b.w }}" height="{{ b.h }}"
+          style="fill:{{ b.color }};opacity:.9"></rect>
+  </g>
+  {% endfor %}
+</svg>
+{% if not chart.bars %}
+<p style="color:var(--dim);font-size:13px">Sin datos todavía.</p>
+{% endif %}
+{% include "_ruler.html" %}
+<div class="legend">
+  <span><i style="background:#50c850"></i>&lt;40</span>
+  <span><i style="background:#ffd23f"></i>40–50</span>
+  <span><i style="background:#ffb020"></i>50–60</span>
+  <span><i style="background:#ff5c5c"></i>&gt;60 dB(A)</span>
+</div>

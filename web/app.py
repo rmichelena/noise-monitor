@@ -28,6 +28,22 @@ from fastapi.templating import Jinja2Templates
 from src.utils import resolve_path
 
 PAGE_SIZE = 20
+# Misma escala que el overlay de los clips.
+DB_BANDS = [
+    (40.0, "#50c850", "verde"),
+    (50.0, "#ffd23f", "amarillo"),
+    (60.0, "#ffb020", "naranja"),
+    (75.0, "#ff5c5c", "rojo"),
+]
+DB_MAX = 75.0
+
+
+def db_color(value: float) -> str:
+    """Color de banda para un nivel (misma escala que el overlay)."""
+    for limit, color, _ in DB_BANDS:
+        if value <= limit:
+            return color
+    return DB_BANDS[-1][1]
 logger = logging.getLogger(__name__)
 
 
@@ -111,15 +127,47 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             return None
         return getattr(video_monitor, "_interpreter", None) is not None
 
-    def _levels(limit: int = 120) -> list[dict]:
-        rows = _query(
-            "SELECT minute, db_avg, db_max FROM audio_levels ORDER BY minute DESC LIMIT ?",
-            (limit,),
-        )
-        return list(reversed(rows))
-
     VEHICLE_GROUPS = {"car": "car", "truck": "heavy", "bus": "heavy",
                       "motorcycle": "moto"}
+
+    def _minute_labels(minutes: int) -> tuple[list[str], list[dict]]:
+        end = datetime.now().replace(second=0, microsecond=0)
+        start = end - timedelta(minutes=minutes - 1)
+        labels = [
+            (start + timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M")
+            for i in range(minutes)
+        ]
+        ticks = [
+            {"pct": round((i + 0.5) / minutes * 100, 3), "label": lbl[11:16]}
+            for i, lbl in enumerate(labels)
+            if lbl[14:16] in ("00", "10", "20", "30", "40", "50")
+        ]
+        return labels, ticks
+
+    def _audio_bars(minutes: int = 120, height: int = 60) -> dict:
+        """Pico de dB por minuto, coloreado por banda, con eje de tiempo."""
+        labels, ticks = _minute_labels(minutes)
+        rows = _query(
+            "SELECT minute, db_max FROM audio_levels WHERE minute >= ?",
+            (labels[0],),
+        )
+        by_minute = {r["minute"]: r["db_max"] for r in rows}
+        width = 100.0 / minutes
+        bars = []
+        for idx, lbl in enumerate(labels):
+            value = by_minute.get(lbl)
+            if value is None:
+                continue
+            level = max(0.0, min(float(value), DB_MAX))
+            bars.append({
+                "x": round(idx * width, 2),
+                "w": round(width * 0.8, 2),
+                "h": round(max(1.0, level / DB_MAX * (height - 5)), 2),
+                "color": db_color(level),
+                "minute": lbl[11:16],
+                "value": round(float(value), 1),
+            })
+        return {"bars": bars, "times": ticks}
 
     def _vehicle_bars(minutes: int = 120, height: int = 60) -> dict:
         """Pasos por minuto, apilados por grupo: auto, pesado, moto.
@@ -170,7 +218,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
                 "minute": lbl[11:16],
                 "segments": segments,
             })
-        return {"bars": bars, "max_total": max_total}
+        return {"bars": bars, "max_total": max_total, "times": _minute_labels(minutes)[1]}
 
     def _sparkline(rows: list[dict], height: int = 60) -> list[dict]:
         """Convierte niveles en barras para el SVG (escala fija 0-70 dB)."""
@@ -315,7 +363,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "events": _events(PAGE_SIZE, None, None),
             "passages": _passages_today(),
             "passages_list": _passages(PAGE_SIZE),
-            "bars": _sparkline(_levels()),
+            "audio_chart": _audio_bars(),
             "vehicle_chart": _vehicle_bars(),
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
