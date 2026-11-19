@@ -12,13 +12,13 @@
   <tbody>
   {% for p in passages_list %}
     <tr>
-      <td class="num">{{ p.timestamp[5:10] }} {{ p.timestamp[11:19] }}</td>
+      <td class="num">{{ p.timestamp[5:10] }} {{ p.timestamp[11:19] }}{% if p.pinned %} <span class="pin" title="fijado">★</span>{% endif %}</td>
       <td>{{ p.vehicle_class }}</td>
       <td>{% if p.direction %}<span class="tag">{{ p.direction }}</span>{% else %}—{% endif %}</td>
       <td class="num">{{ "%.1f"|format(p.speed_kmh) if p.speed_kmh else "—" }}</td>
       <td class="num">{{ "%.1f"|format(p.db_at_time) if p.db_at_time else "—" }}</td>
       <td class="num">{{ "%.2f"|format(p.detection_score) if p.detection_score else "—" }}</td>
-      <td>{% if p.clip_path %}<button class="play" data-src="/api/passage-clips/{{ p.id }}" data-cap="{{ p.timestamp[5:10] }} {{ p.timestamp[11:19] }} · {{ p.vehicle_class }}">▶ ver</button>{% else %}—{% endif %}</td>
+      <td>{% if p.clip_path %}<button class="play" data-kind="passage" data-id="{{ p.id }}" data-pinned="{{ 1 if p.pinned else 0 }}" data-src="/api/passage-clips/{{ p.id }}" data-cap="{{ p.timestamp[5:10] }} {{ p.timestamp[11:19] }} · {{ p.vehicle_class }}">▶ ver</button>{% else %}—{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

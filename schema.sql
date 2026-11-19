@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS vehicle_passages (
     detection_score REAL,              -- Score promedio del modelo durante el tracking
     db_at_time REAL,                   -- dB(A) al momento de la detección
     clip_path TEXT,                    -- clip del pasaje (vehículos en movimiento)
+    pinned INTEGER DEFAULT 0,          -- 1 si el dueño lo marcó
+    pinned_at TEXT,
     noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (noise_event_id) REFERENCES noise_events(id)
@@ -49,6 +51,8 @@ CREATE TABLE IF NOT EXISTS noise_events (
 ALTER TABLE vehicle_passages ADD COLUMN direction TEXT;
 ALTER TABLE vehicle_passages ADD COLUMN speed_kmh REAL;
 ALTER TABLE vehicle_passages ADD COLUMN clip_path TEXT;
+ALTER TABLE vehicle_passages ADD COLUMN pinned INTEGER DEFAULT 0;
+ALTER TABLE vehicle_passages ADD COLUMN pinned_at TEXT;
 ALTER TABLE noise_events ADD COLUMN audio_muted INTEGER DEFAULT 0;
 ALTER TABLE noise_events ADD COLUMN pinned INTEGER DEFAULT 0;
 ALTER TABLE noise_events ADD COLUMN pinned_at TEXT;

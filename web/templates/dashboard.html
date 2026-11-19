@@ -41,6 +41,19 @@
 
 <section>
   <h2>Últimos pasajes</h2>
+  <div class="row" style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:14px">
+    <label style="color:var(--dim);font-size:13px">
+      nivel mínimo: <b id="p-min-db-label" style="color:var(--fg)">0</b> dB(A)
+    </label>
+    <input id="p-min-db" type="range" min="0" max="75" step="1" value="0"
+           style="width:180px;accent-color:var(--accent)">
+    <label style="color:var(--dim);font-size:13px">
+      velocidad mínima: <b id="p-min-speed-label" style="color:var(--fg)">0</b> km/h
+    </label>
+    <input id="p-min-speed" type="range" min="0" max="120" step="1" value="0"
+           style="width:180px;accent-color:var(--accent)">
+    <button id="p-pinned-toggle" class="play" style="font-size:13px">★ solo fijados</button>
+  </div>
   <div id="passages">{% include "_passages.html" %}</div>
 </section>
 
@@ -71,16 +84,31 @@
 <script>
 const player = document.getElementById('player');
 let currentEventId = null;
+let currentKind = 'event';
 let currentPinned = false;
 const pinBtn = document.getElementById('pin-btn');
 function paintPinBtn() {
-  pinBtn.textContent = currentPinned ? '★ Quitar marca' : '★ Fijar este evento';
+  const noun = currentKind === 'passage' ? 'este pasaje' : 'este evento';
+  pinBtn.textContent = currentPinned ? '★ Quitar marca' : `★ Fijar ${noun}`;
 }
+function openClip(btn) {
+  currentEventId = btn.dataset.id ? Number(btn.dataset.id) : null;
+  currentKind = btn.dataset.kind || 'event';
+  currentPinned = btn.dataset.pinned === '1';
+  pinBtn.style.display = currentEventId ? 'inline-block' : 'none';
+  paintPinBtn();
+  playerVideo.src = btn.dataset.src;
+  playerCap.textContent = btn.dataset.cap || '';
+  player.showModal();
+  playerVideo.play().catch(() => {});
+}
+
 pinBtn.addEventListener('click', async () => {
   if (!currentEventId) return;
   const target = currentPinned ? 0 : 1;
+  const base = currentKind === 'passage' ? 'passages' : 'events';
   try {
-    const r = await fetch(`/api/events/${currentEventId}/pin?pinned=${target}`, {method: 'POST'});
+    const r = await fetch(`/api/${base}/${currentEventId}/pin?pinned=${target}`, {method: 'POST'});
     if (!r.ok) return;
     currentPinned = !!target;
     paintPinBtn();
@@ -149,12 +177,45 @@ document.getElementById('filters').addEventListener('click', (ev) => {
 // listeners de los botones no sobreviven a un innerHTML nuevo.
 // Filtros de tráfico: actúan sobre la lista de pasajes.
 let activePassageFilter = null;
+let pMinDb = 0;
+let pMinSpeed = 0;
+let pPinned = false;
+
+const pMinDbInput = document.getElementById('p-min-db');
+const pMinDbLabel = document.getElementById('p-min-db-label');
+const pMinSpeedInput = document.getElementById('p-min-speed');
+const pMinSpeedLabel = document.getElementById('p-min-speed-label');
+const pPinnedToggle = document.getElementById('p-pinned-toggle');
+let pTimer = null;
+function schedulePassages() {
+  clearTimeout(pTimer);
+  pTimer = setTimeout(refreshFragments, 250);
+}
+pMinDbInput.addEventListener('input', () => {
+  pMinDb = Number(pMinDbInput.value);
+  pMinDbLabel.textContent = pMinDb;
+  schedulePassages();
+});
+pMinSpeedInput.addEventListener('input', () => {
+  pMinSpeed = Number(pMinSpeedInput.value);
+  pMinSpeedLabel.textContent = pMinSpeed;
+  schedulePassages();
+});
+pPinnedToggle.addEventListener('click', () => {
+  pPinned = !pPinned;
+  pPinnedToggle.style.color = pPinned ? 'var(--accent)' : '';
+  pPinnedToggle.textContent = pPinned ? '★ solo fijados ✓' : '★ solo fijados';
+  refreshFragments();
+});
 
 function passagesUrl() {
-  if (!activePassageFilter) return '/partials/passages';
   const p = new URLSearchParams();
-  p.set(activePassageFilter.kind, activePassageFilter.value);
-  return '/partials/passages?' + p.toString();
+  if (activePassageFilter) p.set(activePassageFilter.kind, activePassageFilter.value);
+  if (pMinDb > 0) p.set('min_db', String(pMinDb));
+  if (pMinSpeed > 0) p.set('min_speed', String(pMinSpeed));
+  if (pPinned) p.set('pinned', '1');
+  const qs = p.toString();
+  return '/partials/passages' + (qs ? '?' + qs : '');
 }
 
 function syncTrafficButtons() {
@@ -185,10 +246,7 @@ document.getElementById('passages').addEventListener('click', (ev) => {
   }
   const btn = ev.target.closest('button.play');
   if (!btn) return;
-  playerVideo.src = btn.dataset.src;
-  playerCap.textContent = btn.dataset.cap || '';
-  player.showModal();
-  playerVideo.play().catch(() => {});
+  openClip(btn);
 });
 
 document.getElementById('events').addEventListener('click', (ev) => {
@@ -200,14 +258,7 @@ document.getElementById('events').addEventListener('click', (ev) => {
   }
   const btn = ev.target.closest('button.play');
   if (!btn) return;
-  currentEventId = btn.dataset.id ? Number(btn.dataset.id) : null;
-  currentPinned = btn.dataset.pinned === '1';
-  pinBtn.style.display = currentEventId ? 'inline-block' : 'none';
-  paintPinBtn();
-  playerVideo.src = btn.dataset.src;
-  playerCap.textContent = btn.dataset.cap || '';
-  player.showModal();
-  playerVideo.play().catch(() => {});
+  openClip(btn);
 });
 document.getElementById('player-close').addEventListener('click', closePlayer);
 player.addEventListener('click', (ev) => { if (ev.target === player) closePlayer(); });

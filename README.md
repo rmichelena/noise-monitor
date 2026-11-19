@@ -157,9 +157,9 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   cargada como *systemd credential* (`/home/roberto/buzz/credentials/noise.key`).
 - Dashboard: `http://<host>:8000` (host/puerto en `config.yaml` → `web`). Lee SQLite
   en solo-lectura y muestra dB instantáneo, pico por minuto de las últimas 2 h,
-  contadores del día, slider de nivel mínimo para filtrar eventos, marca
-  📌 de eventos fijados (desde el modal del clip) y los últimos eventos con
-  enlace a su clip. Incluye una
+  contadores del día, sliders de nivel y velocidad, marcas ★ de eventos y
+  pasajes fijados (desde el modal del clip) y listas de eventos y pasajes
+  con filtros. Incluye una
   vista en vivo MJPEG (`/stream`) con las detecciones dibujadas, que solo se
   codifica mientras la transmisión está activada.
 - Retención: `scripts/purge.py` borra clips de más de 30 días (la fila del

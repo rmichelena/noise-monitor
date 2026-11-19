@@ -60,6 +60,11 @@ def main() -> int:
         ):
             p = Path(stored)
             pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
+        for (stored,) in conn.execute(
+            "SELECT clip_path FROM vehicle_passages WHERE pinned = 1 AND clip_path IS NOT NULL AND clip_path != ''"
+        ):
+            p = Path(stored)
+            pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
         conn.close()
     except sqlite3.Error:
         pass

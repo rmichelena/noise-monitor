@@ -223,11 +223,16 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         return rows
 
     def _passages(
-        limit: int, vehicle: str | None = None, direction: str | None = None
+        limit: int,
+        vehicle: str | None = None,
+        direction: str | None = None,
+        min_db: float | None = None,
+        min_speed: float | None = None,
+        pinned_only: bool = False,
     ) -> list[dict]:
         sql = (
             "SELECT id, timestamp, timestamp_exit, vehicle_class, lane, direction,"
-            " speed_kmh, detection_score, db_at_time, clip_path"
+            " speed_kmh, detection_score, db_at_time, clip_path, pinned"
             " FROM vehicle_passages WHERE 1=1"
         )
         params: list = []
@@ -237,6 +242,14 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         if direction:
             sql += " AND direction = ?"
             params.append(direction)
+        if min_db is not None:
+            sql += " AND db_at_time >= ?"
+            params.append(min_db)
+        if min_speed is not None:
+            sql += " AND speed_kmh >= ?"
+            params.append(min_speed)
+        if pinned_only:
+            sql += " AND pinned = 1"
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
         return _query(sql, tuple(params))
@@ -352,9 +365,14 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         request: Request,
         vehicle: str | None = None,
         direction: str | None = None,
+        min_db: float | None = None,
+        min_speed: float | None = None,
+        pinned: int = 0,
     ):
         ctx = _context()
-        ctx["passages_list"] = _passages(PAGE_SIZE, vehicle, direction)
+        ctx["passages_list"] = _passages(
+            PAGE_SIZE, vehicle, direction, min_db, min_speed, bool(pinned)
+        )
         ctx["filter_label"] = vehicle or direction
         return templates.TemplateResponse(request, "_passages.html", ctx)
 
@@ -428,6 +446,23 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
                 (event_id,),
             )
         return {"ok": True, "id": event_id, "pinned": bool(pinned)}
+
+    @app.post("/api/passages/{passage_id}/pin")
+    def pin_passage(passage_id: int, pinned: int = 1):
+        rows = _query("SELECT id FROM vehicle_passages WHERE id = ?", (passage_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="Pasaje no encontrado")
+        if pinned:
+            _write(
+                "UPDATE vehicle_passages SET pinned = 1, pinned_at = ? WHERE id = ?",
+                (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), passage_id),
+            )
+        else:
+            _write(
+                "UPDATE vehicle_passages SET pinned = 0, pinned_at = NULL WHERE id = ?",
+                (passage_id,),
+            )
+        return {"ok": True, "id": passage_id, "pinned": bool(pinned)}
 
     @app.get("/api/passage-clips/{passage_id}")
     def api_passage_clip(passage_id: int):
