@@ -44,6 +44,14 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _write(sql: str, params: tuple = ()) -> None:
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        try:
+            conn.execute(sql, params)
+            conn.commit()
+        finally:
+            conn.close()
+
     def _query(sql: str, params: tuple = ()) -> list[dict]:
         try:
             conn = _connect()
@@ -173,11 +181,12 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         min_db: float | None,
         vehicle: str | None = None,
         direction: str | None = None,
+        pinned_only: bool = False,
     ) -> list[dict]:
         sql = (
             "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
             " e.sound_class, e.sound_category, e.sound_confidence, e.vehicle_class,"
-            " e.clip_path, e.audio_muted, p.direction AS direction"
+            " e.clip_path, e.audio_muted, e.pinned, p.direction AS direction"
             " FROM noise_events e"
             " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
             " WHERE 1=1"
@@ -195,6 +204,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         if direction:
             sql += " AND p.direction = ?"
             params.append(direction)
+        if pinned_only:
+            sql += " AND e.pinned = 1"
         sql += " ORDER BY e.id DESC LIMIT ?"
         params.append(limit)
         rows = _query(sql, tuple(params))
@@ -301,9 +312,13 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         request: Request,
         vehicle: str | None = None,
         direction: str | None = None,
+        min_db: float | None = None,
+        pinned: int = 0,
     ):
         ctx = _context()
-        ctx["events"] = _events(PAGE_SIZE, None, None, vehicle, direction)
+        ctx["events"] = _events(
+            PAGE_SIZE, None, min_db, vehicle, direction, pinned_only=bool(pinned)
+        )
         ctx["filter_label"] = vehicle or direction
         return templates.TemplateResponse(request, "_events.html", ctx)
 
@@ -387,6 +402,23 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         for d in video_monitor.recent_detections:
             dets.append({"class": d["class"], "score": round(d["score"], 2)})
         return {"detections": dets, "coral_ok": _coral_ok()}
+
+    @app.post("/api/events/{event_id}/pin")
+    def pin_event(event_id: int, pinned: int = 1):
+        rows = _query("SELECT id FROM noise_events WHERE id = ?", (event_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="Evento no encontrado")
+        if pinned:
+            _write(
+                "UPDATE noise_events SET pinned = 1, pinned_at = ? WHERE id = ?",
+                (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), event_id),
+            )
+        else:
+            _write(
+                "UPDATE noise_events SET pinned = 0, pinned_at = NULL WHERE id = ?",
+                (event_id,),
+            )
+        return {"ok": True, "id": event_id, "pinned": bool(pinned)}
 
     @app.get("/api/passage-clips/{passage_id}")
     def api_passage_clip(passage_id: int):

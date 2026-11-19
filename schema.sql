@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS noise_events (
     passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
     clip_path TEXT,                    -- Ruta relativa al clip
     audio_muted INTEGER DEFAULT 0,      -- 1 si se eliminó el audio (voz)
+    pinned INTEGER DEFAULT 0,           -- 1 si el dueño lo marcó como interesante
+    pinned_at TEXT,
     duration_ms INTEGER,               -- Duración del clip en ms
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
@@ -48,6 +50,8 @@ ALTER TABLE vehicle_passages ADD COLUMN direction TEXT;
 ALTER TABLE vehicle_passages ADD COLUMN speed_kmh REAL;
 ALTER TABLE vehicle_passages ADD COLUMN clip_path TEXT;
 ALTER TABLE noise_events ADD COLUMN audio_muted INTEGER DEFAULT 0;
+ALTER TABLE noise_events ADD COLUMN pinned INTEGER DEFAULT 0;
+ALTER TABLE noise_events ADD COLUMN pinned_at TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);

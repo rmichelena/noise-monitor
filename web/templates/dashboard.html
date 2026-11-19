@@ -46,6 +46,14 @@
 
 <section>
   <h2>Últimos eventos de ruido</h2>
+  <div class="row" style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:14px">
+    <label style="color:var(--dim);font-size:13px">
+      nivel mínimo: <b id="min-db-label" style="color:var(--fg)">0</b> dB(A)
+    </label>
+    <input id="min-db" type="range" min="0" max="75" step="1" value="0"
+           style="width:240px;accent-color:var(--accent)">
+    <button id="pinned-toggle" class="play" style="font-size:13px">📌 solo fijados</button>
+  </div>
   <div id="events">{% include "_events.html" %}</div>
 </section>
 
@@ -54,11 +62,31 @@
     <button class="x" id="player-close" aria-label="Cerrar">✕</button>
     <video id="player-video" controls playsinline preload="metadata"></video>
     <div class="cap" id="player-cap"></div>
+    <div style="padding:0 14px 12px">
+      <button id="pin-btn" class="play" style="font-size:13px">📌 Fijar este evento</button>
+    </div>
   </div>
 </dialog>
 
 <script>
 const player = document.getElementById('player');
+let currentEventId = null;
+let currentPinned = false;
+const pinBtn = document.getElementById('pin-btn');
+function paintPinBtn() {
+  pinBtn.textContent = currentPinned ? '📌 Quitar marca' : '📌 Fijar este evento';
+}
+pinBtn.addEventListener('click', async () => {
+  if (!currentEventId) return;
+  const target = currentPinned ? 0 : 1;
+  try {
+    const r = await fetch(`/api/events/${currentEventId}/pin?pinned=${target}`, {method: 'POST'});
+    if (!r.ok) return;
+    currentPinned = !!target;
+    paintPinBtn();
+    refreshFragments();
+  } catch (e) { /* reintento manual */ }
+});
 const playerVideo = document.getElementById('player-video');
 const playerCap = document.getElementById('player-cap');
 function closePlayer() {
@@ -69,12 +97,33 @@ function closePlayer() {
 }
 // Filtros: los contadores de vehículos actúan sobre la lista de eventos.
 let activeFilter = null;  // {kind: 'vehicle'|'direction', value: '...'}
+let minDb = 0;
+let pinnedOnly = false;
+
+const minDbInput = document.getElementById('min-db');
+const minDbLabel = document.getElementById('min-db-label');
+const pinnedToggle = document.getElementById('pinned-toggle');
+let dbTimer = null;
+minDbInput.addEventListener('input', () => {
+  minDb = Number(minDbInput.value);
+  minDbLabel.textContent = minDb;
+  clearTimeout(dbTimer);
+  dbTimer = setTimeout(refreshFragments, 250);
+});
+pinnedToggle.addEventListener('click', () => {
+  pinnedOnly = !pinnedOnly;
+  pinnedToggle.style.color = pinnedOnly ? 'var(--accent)' : '';
+  pinnedToggle.textContent = pinnedOnly ? '📌 solo fijados ✓' : '📌 solo fijados';
+  refreshFragments();
+});
 
 function eventsUrl() {
-  if (!activeFilter) return '/partials/events';
   const p = new URLSearchParams();
-  p.set(activeFilter.kind, activeFilter.value);
-  return '/partials/events?' + p.toString();
+  if (activeFilter) p.set(activeFilter.kind, activeFilter.value);
+  if (minDb > 0) p.set('min_db', String(minDb));
+  if (pinnedOnly) p.set('pinned', '1');
+  const qs = p.toString();
+  return '/partials/events' + (qs ? '?' + qs : '');
 }
 
 function syncFilterButtons() {
@@ -151,6 +200,10 @@ document.getElementById('events').addEventListener('click', (ev) => {
   }
   const btn = ev.target.closest('button.play');
   if (!btn) return;
+  currentEventId = btn.dataset.id ? Number(btn.dataset.id) : null;
+  currentPinned = btn.dataset.pinned === '1';
+  pinBtn.style.display = currentEventId ? 'inline-block' : 'none';
+  paintPinBtn();
   playerVideo.src = btn.dataset.src;
   playerCap.textContent = btn.dataset.cap || '';
   player.showModal();

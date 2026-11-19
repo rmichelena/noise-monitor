@@ -157,11 +157,14 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   cargada como *systemd credential* (`/home/roberto/buzz/credentials/noise.key`).
 - Dashboard: `http://<host>:8000` (host/puerto en `config.yaml` → `web`). Lee SQLite
   en solo-lectura y muestra dB instantáneo, pico por minuto de las últimas 2 h,
-  contadores del día y los últimos eventos con enlace a su clip. Incluye una
+  contadores del día, slider de nivel mínimo para filtrar eventos, marca
+  📌 de eventos fijados (desde el modal del clip) y los últimos eventos con
+  enlace a su clip. Incluye una
   vista en vivo MJPEG (`/stream`) con las detecciones dibujadas, que solo se
   codifica mientras la transmisión está activada.
 - Retención: `scripts/purge.py` borra clips de más de 30 días (la fila del
-  evento se conserva sin clip) y `audio_levels` de más de 400 días.
+  evento se conserva sin clip) y `audio_levels` de más de 400 días. Los clips
+  de eventos **fijados** (`pinned`) no se borran nunca.
   `noise-purge.timer` lo ejecuta los domingos a las 04:00. Configurable en
   `config.yaml` → `retention`.
 - Acceso externo: `noise-tunnel.service` levanta un *quick tunnel* de

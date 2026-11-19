@@ -32,9 +32,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="no borra nada")
     ap.add_argument("--clip-days", type=int, default=None)
     ap.add_argument("--levels-days", type=int, default=None)
+    ap.add_argument("--config", default=None, help="ruta a config.yaml")
     args = ap.parse_args()
 
-    config = load_config(PROJECT_DIR / "config.yaml")
+    config = load_config(args.config or (PROJECT_DIR / "config.yaml"))
     ret = config.get("retention", {})
     clip_days = args.clip_days if args.clip_days is not None else int(ret.get("clip_days", DEFAULT_CLIP_DAYS))
     levels_days = args.levels_days if args.levels_days is not None else int(ret.get("levels_days", DEFAULT_LEVELS_DAYS))
@@ -49,8 +50,24 @@ def main() -> int:
     freed = 0
     cleared = 0
 
+    # Los clips de eventos fijados no se borran nunca: son la evidencia
+    # que el dueño marcó explícitamente.
+    pinned_paths: set[Path] = set()
+    try:
+        conn = sqlite3.connect(str(db_path))
+        for (stored,) in conn.execute(
+            "SELECT clip_path FROM noise_events WHERE pinned = 1 AND clip_path != ''"
+        ):
+            p = Path(stored)
+            pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
+        conn.close()
+    except sqlite3.Error:
+        pass
+
     if clips_dir.is_dir():
         for f in clips_dir.glob("*.mp4"):
+            if f.resolve() in pinned_paths:
+                continue
             try:
                 mtime = f.stat().st_mtime
                 size = f.stat().st_size
@@ -66,7 +83,8 @@ def main() -> int:
     conn = sqlite3.connect(str(db_path))
     try:
         rows = conn.execute(
-            "SELECT id, clip_path FROM noise_events WHERE clip_path IS NOT NULL AND clip_path != ''"
+            "SELECT id, clip_path FROM noise_events"
+            " WHERE clip_path IS NOT NULL AND clip_path != '' AND pinned = 0"
         ).fetchall()
         for event_id, stored in rows:
             path = Path(stored)
