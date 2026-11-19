@@ -111,7 +111,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         sql = (
             "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
             " e.sound_class, e.sound_category, e.sound_confidence, e.vehicle_class,"
-            " e.clip_path, p.direction AS direction"
+            " e.clip_path, e.audio_muted, p.direction AS direction"
             " FROM noise_events e"
             " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
             " WHERE 1=1"
@@ -143,7 +143,19 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             by_class[r["vehicle_class"]] = by_class.get(r["vehicle_class"], 0) + r["n"]
             if r["direction"]:
                 by_dir[r["direction"]] = by_dir.get(r["direction"], 0) + r["n"]
-        return {"by_class": by_class, "by_dir": by_dir}
+        sp = _query(
+            "SELECT AVG(speed_kmh) v, COUNT(speed_kmh) n, MAX(speed_kmh) mx"
+            " FROM vehicle_passages WHERE timestamp >= ? AND speed_kmh IS NOT NULL",
+            (day,),
+        )
+        speed = None
+        if sp and sp[0]["n"]:
+            speed = {
+                "avg": round(sp[0]["v"], 1),
+                "max": round(sp[0]["mx"], 1),
+                "n": sp[0]["n"],
+            }
+        return {"by_class": by_class, "by_dir": by_dir, "speed": speed}
 
     # ------------------------------------------------------------------
     # Páginas
@@ -242,6 +254,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         """Vista en vivo MJPEG con cajas dibujadas sobre el frame actual."""
         if video_monitor is None:
             raise HTTPException(status_code=503, detail="Stream no disponible")
+        if video_monitor.overlay_clients >= 3:
+            raise HTTPException(status_code=503, detail="Demasiados espectadores")
 
         def gen():
             video_monitor.overlay_clients += 1

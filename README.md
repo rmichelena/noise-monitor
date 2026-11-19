@@ -18,6 +18,10 @@ Implementado en `src/`:
 - `CentroidTracker` para registro continuo de pasajes, con filtros de duración
   mínima y desplazamiento mínimo (descarta parpadeos del modelo y vehículos
   estacionados).
+- Estimación de velocidad por desplazamiento horizontal, escalada con el
+  tramo de pista configurado (`speed.reference_*`).
+- Clips con voz: si YAMNet clasifica habla, el clip se guarda sin audio
+  (`audio_muted`), para no publicar conversaciones de terceros.
 - Triggers por pico instantáneo o por persistencia sobre umbral.
 - Clasificación de audio con YAMNet (521 clases AudioSet) agrupadas en
   categorías: vehículo, construcción, animal, alarma, humano, otro.

@@ -8,6 +8,14 @@
       <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div></div>
     {% endfor %}
   </div>
+  {% if passages.speed %}
+  <div class="grid" style="margin-top:14px">
+    <div class="metric"><div class="v">{{ passages.speed.avg }}</div>
+      <div class="l">km/h promedio ({{ passages.speed.n }})</div></div>
+    <div class="metric"><div class="v">{{ passages.speed.max }}</div>
+      <div class="l">km/h máximo</div></div>
+  </div>
+  {% endif %}
   {% else %}
   <p style="color:var(--dim);font-size:13px">Sin pasajes registrados hoy.</p>
   {% endif %}

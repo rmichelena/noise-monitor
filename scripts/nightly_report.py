@@ -91,6 +91,12 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
             + " · ".join(f"{k} {v}" for k, v in by_class.most_common())
             + extra
         )
+        speeds = [p["speed_kmh"] for p in passages if p["speed_kmh"]]
+        if speeds:
+            lines.append(
+                f"**Velocidad:** media {sum(speeds)/len(speeds):.0f} km/h · "
+                f"máx {max(speeds):.0f} km/h ({len(speeds)} medidos)"
+            )
         try:
             dirs = Counter(p["direction"] for p in passages if p["direction"])
         except (IndexError, KeyError):

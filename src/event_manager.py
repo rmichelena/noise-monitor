@@ -26,6 +26,13 @@ from .utils import init_database, load_config, resolve_path
 
 logger = logging.getLogger(__name__)
 
+# Clases de YAMNet que contienen voz humana: el audio del clip se elimina
+# antes de publicarlo (privacidad de terceros en la vía pública).
+SPEECH_CLASSES = {
+    "Speech", "Child speech", "Conversation", "Narration",
+    "Babbling", "Speech synthesizer", "Whispering",
+}
+
 NOISE_PRIORITY = {
     "truck": 1,
     "bus": 1,
@@ -120,6 +127,7 @@ class EventManager:
         video_frames: list[tuple[float, np.ndarray]],
         sample_rate: int,
         event_timestamp: float,
+        mute_audio: bool = False,
     ) -> tuple[str | None, int]:
         if not audio_blocks or not video_frames:
             logger.warning("Buffers vacíos, no se puede guardar clip")
@@ -162,24 +170,21 @@ class EventManager:
         clip_path = self.clips_dir / clip_filename
 
         try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-i", video_path,
-                    "-i", f_audio.name,
-                    # Recompresión: el mp4v intermedio pesa ~5 MB/s a 1080p.
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "30",
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
-                    "-b:a", "64k",
-                    "-shortest",
-                    str(clip_path),
-                ],
-                check=True,
-                capture_output=True,
-            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                # Recompresión: el mp4v intermedio pesa ~5 MB/s a 1080p.
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "30",
+                "-pix_fmt", "yuv420p",
+            ]
+            if mute_audio:
+                cmd += ["-an"]  # voz detectada: clip sin audio
+            else:
+                cmd += ["-i", f_audio.name, "-c:a", "aac", "-b:a", "64k", "-shortest"]
+            cmd.append(str(clip_path))
+            subprocess.run(cmd, check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
             logger.error("ffmpeg falló: %s", e.stderr.decode() if e.stderr else e)
             return None, 0
@@ -212,8 +217,9 @@ class EventManager:
         cur = conn.execute(
             """
             INSERT INTO vehicle_passages
-                (timestamp, timestamp_exit, vehicle_class, lane, direction, detection_score, db_at_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (timestamp, timestamp_exit, vehicle_class, lane, direction,
+                 speed_kmh, detection_score, db_at_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts_enter,
@@ -221,6 +227,7 @@ class EventManager:
                 passage["vehicle_class"],
                 passage.get("lane"),
                 passage.get("direction"),
+                passage.get("speed_kmh"),
                 passage.get("detection_score"),
                 round(db_now, 1),
             ),
@@ -320,8 +327,9 @@ class EventManager:
             if t_start <= ts <= t_end
         ]
 
+        mute_audio = sound_class in SPEECH_CLASSES
         clip_path, duration_ms = self._save_clip(
-            audio_list, video_list, sample_rate, timestamp
+            audio_list, video_list, sample_rate, timestamp, mute_audio=mute_audio
         )
         if clip_path is None:
             clip_path = ""
@@ -341,14 +349,14 @@ class EventManager:
                 (timestamp, db_max, db_avg, trigger_type,
                  sound_class, sound_category, sound_confidence,
                  vehicle_class, lane, confidence,
-                 passage_id, clip_path, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 passage_id, clip_path, audio_muted, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts_iso, db_max, db_avg, trigger_type,
                 sound_class, sound_category, sound_confidence,
                 culprit, lane, confidence,
-                passage_id, clip_path, duration_ms,
+                passage_id, clip_path, 1 if mute_audio else 0, duration_ms,
             ),
         )
         noise_event_id = cur.lastrowid
@@ -365,13 +373,14 @@ class EventManager:
         self._last_event_ts = timestamp
 
         logger.info(
-            "NoiseEvent #%d: %.1f dB, %s/%s (%s) clip=%s @ %s",
+            "NoiseEvent #%d: %.1f dB, %s/%s (%s) clip=%s%s @ %s",
             noise_event_id,
             db_max,
             sound_category or "?",
             sound_class or "?",
             culprit or "none",
             clip_path or "none",
+            " (audio mudo)" if mute_audio else "",
             ts_iso,
         )
 

@@ -34,12 +34,15 @@ class CentroidTracker:
         min_track_seconds: float = 2.0,
         min_displacement: float = 60.0,
         passage_queue: Queue | None = None,
+        px_per_m: float | None = None,
     ):
         self.max_distance = max_distance
         self.max_disappeared = max_disappeared
         self.min_track_seconds = min_track_seconds
         self.min_displacement = min_displacement
         self.passage_queue = passage_queue or Queue()
+        # Escala horizontal de la pista (px por metro) para estimar velocidad.
+        self.px_per_m = px_per_m
 
         self._next_id = 0
         self._objects: OrderedDict[int, dict] = OrderedDict()
@@ -79,11 +82,21 @@ class CentroidTracker:
         # mitad del cuadro estaba el centroide, no por dónde iba el vehículo.
         direction = "ltr" if ex > sx else "rtl"
 
+        # Velocidad: desplazamiento horizontal / tiempo de la trayectoria.
+        # Se descarta si sale fuera de rango (track partido, cruce vertical).
+        speed_kmh = None
+        if self.px_per_m and duration > 0.2:
+            speed_ms = (abs(ex - sx) / self.px_per_m) / duration
+            candidate = speed_ms * 3.6
+            if 0.5 <= candidate <= 150.0:
+                speed_kmh = round(candidate, 1)
+
         avg_score = float(np.mean(obj["scores"])) if obj["scores"] else 0.0
         self.passage_queue.put({
             "vehicle_class": obj["class"],
             "lane": obj["lane"],
             "direction": direction,
+            "speed_kmh": speed_kmh,
             "detection_score": round(avg_score, 3),
             "timestamp_enter": obj["first_seen"],
             "timestamp_exit": obj["last_seen"],

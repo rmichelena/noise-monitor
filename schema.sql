@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS vehicle_passages (
     vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
     lane TEXT,                         -- mitad de imagen: 'left', 'right'
     direction TEXT,                    -- sentido real: 'ltr' o 'rtl'
+    speed_kmh REAL,                    -- velocidad media estimada por píxeles
     detection_score REAL,              -- Score promedio del modelo durante el tracking
     db_at_time REAL,                   -- dB(A) al momento de la detección
     noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
@@ -35,6 +36,7 @@ CREATE TABLE IF NOT EXISTS noise_events (
     confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
     passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
     clip_path TEXT,                    -- Ruta relativa al clip
+    audio_muted INTEGER DEFAULT 0,      -- 1 si se eliminó el audio (voz)
     duration_ms INTEGER,               -- Duración del clip en ms
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
@@ -42,6 +44,8 @@ CREATE TABLE IF NOT EXISTS noise_events (
 
 -- Migración para bases existentes (falla en silencio si ya existe)
 ALTER TABLE vehicle_passages ADD COLUMN direction TEXT;
+ALTER TABLE vehicle_passages ADD COLUMN speed_kmh REAL;
+ALTER TABLE noise_events ADD COLUMN audio_muted INTEGER DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);

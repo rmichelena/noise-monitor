@@ -105,6 +105,22 @@ class VideoMonitor:
         self._loop_video = bool(debug_cfg.get("loop_video", True))
         self._is_file_source = isinstance(raw_source, str)
 
+        # Escala pista: 30 m entre los dos árboles de referencia.
+        speed_cfg = self.config.get("speed", {})
+        px_per_m = None
+        if speed_cfg.get("enabled"):
+            span_px = abs(
+                float(speed_cfg.get("reference_right_x", 0))
+                - float(speed_cfg.get("reference_left_x", 0))
+            )
+            distance_m = float(speed_cfg.get("reference_distance_m", 0))
+            if span_px > 0 and distance_m > 0:
+                px_per_m = span_px / distance_m
+                logger.info(
+                    "Escala de pista: %.1f px/m (%.0f px = %.0f m)",
+                    px_per_m, span_px, distance_m,
+                )
+
         # Centroid tracker
         tracker_cfg = self.config.get("tracker", {})
         self.passage_queue: Queue = Queue()
@@ -114,6 +130,7 @@ class VideoMonitor:
             min_track_seconds=float(tracker_cfg.get("min_track_seconds", 2.0)),
             min_displacement=float(tracker_cfg.get("min_displacement", 60)),
             passage_queue=self.passage_queue,
+            px_per_m=px_per_m,
         )
 
     def latest_overlay(self) -> bytes | None:
