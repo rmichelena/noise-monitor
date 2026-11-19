@@ -209,7 +209,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "events_today": counters["events"],
             "passages_today": counters["passages"],
             "max_db_today": counters["max_db"],
-            "events_without_clip_today": counters["without_clip"],
+            "events_without_clip_1h": counters["without_clip"],
             "coral_ok": _coral_ok(),
             "now": datetime.now().strftime("%H:%M:%S"),
         }
