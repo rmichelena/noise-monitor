@@ -228,6 +228,12 @@ class AudioMonitor:
             conn.close()
         except Exception:
             logger.exception("No se pudo guardar nivel de audio del minuto %s", label)
+        finally:
+            # El minuto ya está persistido: si no se limpia, el mismo parcial
+            # se reescribe en cada flush posterior (stop, reinicio).
+            self._level_vals = []
+            self._level_minute = None
+
 
     def _classify_loop(self):
         """Clasifica eventos fuera del callback de audio."""
@@ -373,7 +379,14 @@ class AudioMonitor:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-        self._thread = None
+        # Sin join, `start()` podía lanzar un segundo lector mientras el
+        # anterior seguía en su último `sleep`: dos hilos procesando el mismo
+        # WAV duplicaba niveles, triggers y clips.
+        if self._thread:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                logger.warning("El lector de audio no terminó en 5 s")
+            self._thread = None
         if self._classifier_thread:
             self._classify_queue.put(None)
             self._classifier_thread.join(timeout=5)

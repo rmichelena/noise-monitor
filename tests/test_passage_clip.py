@@ -17,17 +17,16 @@ import numpy as np
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.event_manager import EventManager  # noqa: E402
-from src.utils import load_config  # noqa: E402
+from support import example_config, resolve_stored  # noqa: E402
 
 
 class PassageClipTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        cfg = load_config(PROJECT_DIR / "config.yaml")
-        cfg["paths"]["clips"] = self.tmp.name
-        cfg["paths"]["database"] = str(Path(self.tmp.name) / "test.db")
+        cfg = example_config(self.tmp.name)
         cfg["buffer"]["pre_event_seconds"] = 2
         cfg["buffer"]["post_event_seconds"] = 2
 
@@ -71,7 +70,7 @@ class PassageClipTest(unittest.TestCase):
         self.assertIsNotNone(row, "no se insertó el pasaje")
         clip = row[0]
         self.assertTrue(clip, "el pasaje quedó sin clip")
-        path = PROJECT_DIR / clip
+        path = resolve_stored(clip)
         self.assertTrue(path.is_file(), f"no existe el archivo {path}")
         streams = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",

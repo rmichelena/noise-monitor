@@ -14,7 +14,13 @@ from queue import Queue
 
 import cv2
 import numpy as np
-from ai_edge_litert.interpreter import Interpreter, load_delegate
+
+try:  # El runtime del acelerador no hace falta para importar el módulo:
+    # los scripts y los tests lo importan en hosts sin Coral instalado.
+    from ai_edge_litert.interpreter import Interpreter, load_delegate
+except ImportError:  # pragma: no cover - depende del host
+    Interpreter = None
+    load_delegate = None
 
 from .utils import load_config
 from .vehicle_tracker import CentroidTracker
@@ -94,7 +100,7 @@ class VideoMonitor:
         self.labels_path = model_dir / "coco_labels.txt"
         self.labels = load_labels(self.labels_path)
 
-        self._interpreter: Interpreter | None = None
+        self._interpreter = None
         self._tpu_retry_at = 0.0  # epoch del próximo intento si el TPU falta
         self._tpu_retry_every = 60.0
         self._input_index = 0
@@ -125,6 +131,16 @@ class VideoMonitor:
                 logger.info(
                     "Escala de pista: %.1f px/m (%.0f px = %.0f m)",
                     px_per_m, span_px, distance_m,
+                )
+            else:
+                # Con `enabled: true` y sin referencias válidas el tracker no
+                # estima velocidad y todo pasaje queda con speed_kmh nulo, sin
+                # ningún aviso: el dashboard simplemente no muestra km/h.
+                logger.warning(
+                    "speed.enabled pero speed.reference_left_x/reference_right_x "
+                    "o reference_distance_m no son válidos (%.0f px, %.1f m): "
+                    "no se estimará velocidad",
+                    span_px, distance_m,
                 )
 
         # Centroid tracker
@@ -200,6 +216,14 @@ class VideoMonitor:
         evidencia principal y no dependen del Coral. `_ensure_interpreter`
         reintenta cada minuto, así que un replug se recupera en caliente.
         """
+        if Interpreter is None or load_delegate is None:
+            logger.error(
+                "VideoMonitor: falta el runtime ai-edge-litert. Detección "
+                "visual DESACTIVADA (pip install -r requirements.txt)."
+            )
+            self._interpreter = None
+            return False
+
         try:
             delegate = load_delegate("libedgetpu.so.1", options={"device": "usb"})
         except Exception:
@@ -415,10 +439,35 @@ class VideoMonitor:
 
         return True
 
-    def run_loop(self):
-        """Loop bloqueante de captura (para ejecutar en thread)."""
+    def run_loop(self, max_failures: int = 30, backoff: float = 0.5):
+        """Loop bloqueante de captura (para ejecutar en thread).
+
+        Cuando la cámara deja de entregar frames (`process_frame` devuelve
+        False) el loop anterior seguía llamándolo sin pausa: 100 % de CPU y
+        cero avisos hasta que systemd reiniciaba el proceso. Ahora reintenta
+        con espera y se detiene con un error explícito tras `max_failures`
+        fallos consecutivos.
+        """
+        failures = 0
         while self._running and self._cap:
-            self.process_frame()
+            if self.process_frame():
+                failures = 0
+                continue
+            if not self._running or self._cap is None:
+                return
+            if self._is_file_source and not self._loop_video:
+                logger.info("Fin del video de prueba (loop_video desactivado)")
+                self._running = False
+                return
+            failures += 1
+            if failures >= max_failures:
+                logger.error(
+                    "Cámara %s sin frames tras %d intentos: captura de video detenida",
+                    self.source, failures,
+                )
+                self._running = False
+                return
+            time.sleep(backoff)
 
     def stop(self):
         """Detiene captura."""

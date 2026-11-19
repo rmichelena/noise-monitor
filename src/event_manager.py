@@ -192,6 +192,23 @@ class EventManager:
     # ------------------------------------------------------------------
     # Clip saving (unchanged logic)
     # ------------------------------------------------------------------
+    def _unique_clip_path(self, prefix: str, event_timestamp: float) -> Path:
+        """Ruta de clip libre para ese segundo.
+
+        El nombre se deriva al segundo: dos eventos en el mismo segundo (pico
+        y sostenido encadenados, o dos pasajes cruzándose) escribían el mismo
+        archivo, así que el segundo sobrescribía el clip del primero y su fila
+        quedaba apuntando a la evidencia del otro evento. Se añade un sufijo
+        `_2`, `_3`... cuando el nombre ya existe.
+        """
+        stamp = datetime.fromtimestamp(event_timestamp).strftime("%Y%m%d_%H%M%S")
+        candidate = self.clips_dir / f"{prefix}_{stamp}.mp4"
+        n = 2
+        while candidate.exists():
+            candidate = self.clips_dir / f"{prefix}_{stamp}_{n}.mp4"
+            n += 1
+        return candidate
+
     def _save_clip(
         self,
         audio_blocks: list[tuple[float, np.ndarray]],
@@ -227,23 +244,30 @@ class EventManager:
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(video_path, fourcc, fps_out, actual_resolution)
+        if not out.isOpened():
+            logger.error("No se pudo abrir el writer MP4; clip descartado")
+            Path(f_audio.name).unlink(missing_ok=True)
+            Path(video_path).unlink(missing_ok=True)
+            return None, 0
 
         video_cfg = self.config.get("video", {})
         overlay = bool(video_cfg.get("overlay_db", True))
         every = max(1, int(video_cfg.get("overlay_every_frames", 5)))
         db_val = None
-        for idx, (ts, frame) in enumerate(video_frames):
-            if overlay:
-                if idx % every == 0:
-                    audio = self.audio_monitor
-                    if audio is not None and hasattr(audio, "db_at"):
-                        try:
-                            db_val = audio.db_at(ts)
-                        except Exception:
-                            db_val = None
-                frame = draw_frame_overlay(frame, ts, db_val)
-            out.write(frame)
-        out.release()
+        try:
+            for idx, (ts, frame) in enumerate(video_frames):
+                if overlay:
+                    if idx % every == 0:
+                        audio = self.audio_monitor
+                        if audio is not None and hasattr(audio, "db_at"):
+                            try:
+                                db_val = audio.db_at(ts)
+                            except Exception:
+                                db_val = None
+                    frame = draw_frame_overlay(frame, ts, db_val)
+                out.write(frame)
+        finally:
+            out.release()
 
         duration_ms = int(len(audio_data) / sample_rate * 1000)
         audio_span = audio_blocks[-1][0] - audio_blocks[0][0]
@@ -251,9 +275,7 @@ class EventManager:
             "Clip: audio %.2fs (%d bloques), video %.2fs (%d frames, %.1f fps)",
             audio_span, len(audio_blocks), span, len(video_frames), fps_out,
         )
-        ts = datetime.fromtimestamp(event_timestamp).strftime("%Y%m%d_%H%M%S")
-        clip_filename = f"{prefix}_{ts}.mp4"
-        clip_path = self.clips_dir / clip_filename
+        clip_path = self._unique_clip_path(prefix, event_timestamp)
 
         try:
             # Todos los -i primero: cualquier opción entre dos entradas la
