@@ -52,7 +52,7 @@
     </label>
     <input id="min-db" type="range" min="0" max="75" step="1" value="0"
            style="width:240px;accent-color:var(--accent)">
-    <button id="pinned-toggle" class="play" style="font-size:13px">📌 solo fijados</button>
+    <button id="pinned-toggle" class="play" style="font-size:13px">★ solo fijados</button>
   </div>
   <div id="events">{% include "_events.html" %}</div>
 </section>
@@ -63,7 +63,7 @@
     <video id="player-video" controls playsinline preload="metadata"></video>
     <div class="cap" id="player-cap"></div>
     <div style="padding:0 14px 12px">
-      <button id="pin-btn" class="play" style="font-size:13px">📌 Fijar este evento</button>
+      <button id="pin-btn" class="play" style="font-size:13px">★ Fijar este evento</button>
     </div>
   </div>
 </dialog>
@@ -74,7 +74,7 @@ let currentEventId = null;
 let currentPinned = false;
 const pinBtn = document.getElementById('pin-btn');
 function paintPinBtn() {
-  pinBtn.textContent = currentPinned ? '📌 Quitar marca' : '📌 Fijar este evento';
+  pinBtn.textContent = currentPinned ? '★ Quitar marca' : '★ Fijar este evento';
 }
 pinBtn.addEventListener('click', async () => {
   if (!currentEventId) return;
@@ -113,7 +113,7 @@ minDbInput.addEventListener('input', () => {
 pinnedToggle.addEventListener('click', () => {
   pinnedOnly = !pinnedOnly;
   pinnedToggle.style.color = pinnedOnly ? 'var(--accent)' : '';
-  pinnedToggle.textContent = pinnedOnly ? '📌 solo fijados ✓' : '📌 solo fijados';
+  pinnedToggle.textContent = pinnedOnly ? '★ solo fijados ✓' : '★ solo fijados';
   refreshFragments();
 });
 
