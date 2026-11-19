@@ -16,6 +16,12 @@
       <div class="v"><span id="max_db">{{ counters.max_db if counters.max_db is not none else "—" }}</span></div>
       <div class="l">máximo hoy dB(A)</div>
     </div>
+    {% if counters.without_clip %}
+    <div class="metric">
+      <div class="v" id="without_clip" style="color:var(--warn)">{{ counters.without_clip }}</div>
+      <div class="l">sin clip (1 h)</div>
+    </div>
+    {% endif %}
     <div class="metric">
       <div class="v" id="coral">{% if coral_ok is none %}?{% elif coral_ok %}<span class="ok">activo</span>{% else %}<span class="bad">sin TPU</span>{% endif %}</div>
       <div class="l">detección visual</div>

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -69,10 +69,16 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         maxdb = _query(
             "SELECT MAX(db_max) m FROM noise_events WHERE timestamp >= ?", (day,)
         )
+        hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+        missing = _query(
+            "SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ? AND clip_path = ''",
+            (hour_ago,),
+        )
         return {
             "events": ev[0]["n"] if ev else 0,
             "passages": ps[0]["n"] if ps else 0,
             "max_db": round(maxdb[0]["m"], 1) if maxdb and maxdb[0]["m"] else None,
+            "without_clip": missing[0]["n"] if missing else 0,
         }
 
     def _current_db() -> float | None:
@@ -203,6 +209,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "events_today": counters["events"],
             "passages_today": counters["passages"],
             "max_db_today": counters["max_db"],
+            "events_without_clip_today": counters["without_clip"],
             "coral_ok": _coral_ok(),
             "now": datetime.now().strftime("%H:%M:%S"),
         }
