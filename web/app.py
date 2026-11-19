@@ -113,7 +113,13 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             bars.append({"x": round(i * width, 2), "w": round(width * 0.8, 2), "h": round(h, 1)})
         return bars
 
-    def _events(limit: int, category: str | None, min_db: float | None) -> list[dict]:
+    def _events(
+        limit: int,
+        category: str | None,
+        min_db: float | None,
+        vehicle: str | None = None,
+        direction: str | None = None,
+    ) -> list[dict]:
         sql = (
             "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
             " e.sound_class, e.sound_category, e.sound_confidence, e.vehicle_class,"
@@ -129,6 +135,12 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         if min_db is not None:
             sql += " AND e.db_max >= ?"
             params.append(min_db)
+        if vehicle:
+            sql += " AND e.vehicle_class = ?"
+            params.append(vehicle)
+        if direction:
+            sql += " AND p.direction = ?"
+            params.append(direction)
         sql += " ORDER BY e.id DESC LIMIT ?"
         params.append(limit)
         rows = _query(sql, tuple(params))
@@ -149,6 +161,13 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             by_class[r["vehicle_class"]] = by_class.get(r["vehicle_class"], 0) + r["n"]
             if r["direction"]:
                 by_dir[r["direction"]] = by_dir.get(r["direction"], 0) + r["n"]
+        ev_rows = _query(
+            "SELECT e.vehicle_class c, COUNT(*) n FROM noise_events e"
+            " WHERE e.timestamp >= ? AND e.vehicle_class IS NOT NULL GROUP BY c",
+            (day,),
+        )
+        events_by_class = {r["c"]: r["n"] for r in ev_rows}
+
         sp = _query(
             "SELECT AVG(speed_kmh) v, COUNT(speed_kmh) n, MAX(speed_kmh) mx"
             " FROM vehicle_passages WHERE timestamp >= ? AND speed_kmh IS NOT NULL",
@@ -161,7 +180,12 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
                 "max": round(sp[0]["mx"], 1),
                 "n": sp[0]["n"],
             }
-        return {"by_class": by_class, "by_dir": by_dir, "speed": speed}
+        return {
+            "by_class": by_class,
+            "by_dir": by_dir,
+            "speed": speed,
+            "events_by_class": events_by_class,
+        }
 
     # ------------------------------------------------------------------
     # Páginas
@@ -187,8 +211,15 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         return templates.TemplateResponse(request, "_live.html", _context())
 
     @app.get("/partials/events", response_class=HTMLResponse)
-    def partial_events(request: Request):
-        return templates.TemplateResponse(request, "_events.html", _context())
+    def partial_events(
+        request: Request,
+        vehicle: str | None = None,
+        direction: str | None = None,
+    ):
+        ctx = _context()
+        ctx["events"] = _events(PAGE_SIZE, None, None, vehicle, direction)
+        ctx["filter_label"] = vehicle or direction
+        return templates.TemplateResponse(request, "_events.html", ctx)
 
     @app.get("/partials/spark", response_class=HTMLResponse)
     def partial_spark(request: Request):
@@ -219,8 +250,10 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         limit: int = Query(20, ge=1, le=200),
         category: str | None = None,
         min_db: float | None = None,
+        vehicle: str | None = None,
+        direction: str | None = None,
     ):
-        return {"events": _events(limit, category, min_db)}
+        return {"events": _events(limit, category, min_db, vehicle, direction)}
 
     @app.get("/api/clips/{event_id}")
     def api_clip(event_id: int):

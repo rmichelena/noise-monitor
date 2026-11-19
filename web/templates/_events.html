@@ -1,4 +1,10 @@
-  {% if events %}
+  {% if filter_label %}
+<p style="color:var(--dim);font-size:13px;margin:0 0 10px">
+  Filtro: <b>{{ filter_label }}</b> ·
+  <button id="clear-filter" class="play">quitar</button>
+</p>
+{% endif %}
+{% if events %}
   <table>
     <thead>
       <tr><th>fecha · hora</th><th>dB(A)</th><th>sonido</th><th>vehículo</th><th>conf.</th><th>clip</th></tr>

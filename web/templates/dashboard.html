@@ -52,9 +52,44 @@ function closePlayer() {
   playerVideo.load();
   player.close();
 }
+// Filtros: los contadores de vehículos actúan sobre la lista de eventos.
+let activeFilter = null;  // {kind: 'vehicle'|'direction', value: '...'}
+
+function eventsUrl() {
+  if (!activeFilter) return '/partials/events';
+  const p = new URLSearchParams();
+  p.set(activeFilter.kind, activeFilter.value);
+  return '/partials/events?' + p.toString();
+}
+
+function syncFilterButtons() {
+  document.querySelectorAll('button.filter').forEach((b) => {
+    const on = activeFilter
+      ? (b.dataset.kind === activeFilter.kind && b.dataset.value === activeFilter.value)
+      : (b.dataset.kind === 'all');
+    b.classList.toggle('active', on);
+  });
+}
+
+document.getElementById('vehicles').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button.filter');
+  if (!btn) return;
+  activeFilter = btn.dataset.kind === 'all'
+    ? null
+    : {kind: btn.dataset.kind, value: btn.dataset.value};
+  syncFilterButtons();
+  refreshFragments();
+});
+
 // Delegación: la lista de eventos se reemplaza por auto-refresh y los
 // listeners de los botones no sobreviven a un innerHTML nuevo.
 document.getElementById('events').addEventListener('click', (ev) => {
+  if (ev.target.id === 'clear-filter') {
+    activeFilter = null;
+    syncFilterButtons();
+    refreshFragments();
+    return;
+  }
   const btn = ev.target.closest('button.play');
   if (!btn) return;
   playerVideo.src = btn.dataset.src;
@@ -66,16 +101,16 @@ document.getElementById('player-close').addEventListener('click', closePlayer);
 player.addEventListener('click', (ev) => { if (ev.target === player) closePlayer(); });
 player.addEventListener('close', () => { playerVideo.pause(); });
 
-// Refresco de fragmentos: lista de eventos, gráfico y vehículos. El modal
-// vive fuera de estos contenedores, así que se puede refrescar debajo.
-const FRAGMENTS = [
-  ['events', '/partials/events'],
-  ['spark', '/partials/spark'],
-  ['vehicles', '/partials/vehicles'],
-];
+// Refresco de fragmentos; la lista conserva el filtro activo. El modal vive
+// fuera de estos contenedores, así que se refresca por debajo.
 async function refreshFragments() {
   if (document.hidden) return;
-  await Promise.all(FRAGMENTS.map(async ([id, url]) => {
+  const frags = [
+    ['events', eventsUrl()],
+    ['spark', '/partials/spark'],
+    ['vehicles', '/partials/vehicles'],
+  ];
+  await Promise.all(frags.map(async ([id, url]) => {
     try {
       const r = await fetch(url, {cache: 'no-store'});
       if (!r.ok) return;
@@ -84,8 +119,10 @@ async function refreshFragments() {
       if (el) el.innerHTML = html;
     } catch (e) { /* pipeline reiniciando: se reintenta al siguiente tick */ }
   }));
+  syncFilterButtons();
 }
 setInterval(refreshFragments, 10000);
+syncFilterButtons();
 
 const liveBtn = document.getElementById('live-toggle');
 const liveImg = document.getElementById('live-img');
