@@ -1,20 +1,11 @@
 {% if passages.by_class %}
 <div class="grid">
-  <button class="metric filter" data-kind="all" data-value="all">
-    <div class="v">{{ counters.passages }}</div>
-    <div class="l">todos</div>
-  </button>
   {% for k, v in passages.by_class.items() %}
-  <button class="metric filter" data-kind="vehicle" data-value="{{ k }}">
-    <div class="v">{{ v }}</div>
-    <div class="l">{{ k }} · {{ passages.events_by_class.get(k, 0) }} eventos</div>
-  </button>
+  <div class="metric"><div class="v">{{ v }}</div><div class="l">{{ k }}</div></div>
   {% endfor %}
   {% for k, v in passages.by_dir.items() %}
-  <button class="metric filter" data-kind="direction" data-value="{{ k }}">
-    <div class="v">{{ v }}</div>
-    <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div>
-  </button>
+  <div class="metric"><div class="v">{{ v }}</div>
+    <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div></div>
   {% endfor %}
 </div>
 {% if passages.speed %}

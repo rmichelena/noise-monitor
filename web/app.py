@@ -167,6 +167,13 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             (day,),
         )
         events_by_class = {r["c"]: r["n"] for r in ev_rows}
+        ev_dir = _query(
+            "SELECT p.direction d, COUNT(*) n FROM noise_events e"
+            " JOIN vehicle_passages p ON p.id = e.passage_id"
+            " WHERE e.timestamp >= ? AND p.direction IS NOT NULL GROUP BY d",
+            (day,),
+        )
+        events_by_dir = {r["d"]: r["n"] for r in ev_dir}
 
         sp = _query(
             "SELECT AVG(speed_kmh) v, COUNT(speed_kmh) n, MAX(speed_kmh) mx"
@@ -185,6 +192,10 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "by_dir": by_dir,
             "speed": speed,
             "events_by_class": events_by_class,
+            "events_by_dir": events_by_dir,
+            "events_total": (
+                _query("SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ?", (day,))[0]["n"]
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -225,9 +236,13 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     def partial_spark(request: Request):
         return templates.TemplateResponse(request, "_spark.html", _context())
 
-    @app.get("/partials/vehicles", response_class=HTMLResponse)
-    def partial_vehicles(request: Request):
-        return templates.TemplateResponse(request, "_vehicles.html", _context())
+    @app.get("/partials/filters", response_class=HTMLResponse)
+    def partial_filters(request: Request):
+        return templates.TemplateResponse(request, "_filters.html", _context())
+
+    @app.get("/partials/traffic", response_class=HTMLResponse)
+    def partial_traffic(request: Request):
+        return templates.TemplateResponse(request, "_traffic.html", _context())
 
     # ------------------------------------------------------------------
     # API

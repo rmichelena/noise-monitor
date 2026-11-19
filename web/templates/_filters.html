@@ -1,0 +1,22 @@
+{% if passages.events_total %}
+<div class="grid">
+  <button class="metric filter" data-kind="all" data-value="all">
+    <div class="v">{{ passages.events_total }}</div>
+    <div class="l">todos los eventos</div>
+  </button>
+  {% for k, v in passages.events_by_class.items() %}
+  <button class="metric filter" data-kind="vehicle" data-value="{{ k }}">
+    <div class="v">{{ v }}</div>
+    <div class="l">{{ k }}</div>
+  </button>
+  {% endfor %}
+  {% for k, v in passages.events_by_dir.items() %}
+  <button class="metric filter" data-kind="direction" data-value="{{ k }}">
+    <div class="v">{{ v }}</div>
+    <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div>
+  </button>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--dim);font-size:13px">Sin eventos hoy.</p>
+{% endif %}

@@ -25,8 +25,13 @@
 </section>
 
 <section>
-  <h2>Vehículos hoy</h2>
-  <div id="vehicles">{% include "_vehicles.html" %}</div>
+  <h2>Eventos por vehículo · clic para filtrar</h2>
+  <div id="filters">{% include "_filters.html" %}</div>
+</section>
+
+<section>
+  <h2>Tráfico hoy · pasajes del tracker</h2>
+  <div id="traffic">{% include "_traffic.html" %}</div>
 </section>
 
 <section>
@@ -71,7 +76,7 @@ function syncFilterButtons() {
   });
 }
 
-document.getElementById('vehicles').addEventListener('click', (ev) => {
+document.getElementById('filters').addEventListener('click', (ev) => {
   const btn = ev.target.closest('button.filter');
   if (!btn) return;
   activeFilter = btn.dataset.kind === 'all'
@@ -108,7 +113,8 @@ async function refreshFragments() {
   const frags = [
     ['events', eventsUrl()],
     ['spark', '/partials/spark'],
-    ['vehicles', '/partials/vehicles'],
+    ['filters', '/partials/filters'],
+    ['traffic', '/partials/traffic'],
   ];
   await Promise.all(frags.map(async ([id, url]) => {
     try {
