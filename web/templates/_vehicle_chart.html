@@ -5,7 +5,7 @@
   <g>
     <title>{{ b.minute }} · {{ b.total }} vehículos</title>
     {% for s in b.segments %}
-    <rect x="{{ b.x }}" y="{{ s.y }}" width="{{ b.w }}" height="{{ s.h }}" fill="{{ s.color }}"></rect>
+    <rect x="{{ b.x }}" y="{{ s.y }}" width="{{ b.w }}" height="{{ s.h }}" style="fill:{{ s.color }};opacity:.9"></rect>
     {% endfor %}
   </g>
   {% endfor %}
