@@ -8,6 +8,18 @@
 </section>
 
 <section>
+  <h2>Vista en vivo · detecciones sobre el video</h2>
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <button id="live-toggle" class="btn">▶ Iniciar transmisión</button>
+    <span style="color:var(--dim);font-size:13px">MJPEG a 10 fps, solo mientras esté activa</span>
+  </div>
+  <div id="live-wrap" hidden style="margin-top:12px">
+    <img id="live-img" alt="Vista en vivo con detecciones"
+         style="width:100%;border-radius:8px;background:#000;display:block">
+  </div>
+</section>
+
+<section>
   <h2>Fondo sonoro · últimos 120 minutos (pico por minuto)</h2>
   <div id="spark">{% include "_spark.html" %}</div>
 </section>
@@ -74,6 +86,23 @@ async function refreshFragments() {
   }));
 }
 setInterval(refreshFragments, 10000);
+
+const liveBtn = document.getElementById('live-toggle');
+const liveImg = document.getElementById('live-img');
+const liveWrap = document.getElementById('live-wrap');
+let liveOn = false;
+liveBtn.addEventListener('click', () => {
+  liveOn = !liveOn;
+  if (liveOn) {
+    liveImg.src = '/stream?t=' + Date.now();
+    liveWrap.hidden = false;
+    liveBtn.textContent = '■ Detener transmisión';
+  } else {
+    liveImg.removeAttribute('src');
+    liveWrap.hidden = true;
+    liveBtn.textContent = '▶ Iniciar transmisión';
+  }
+});
 
 async function poll() {
   try {

@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from src.utils import resolve_path
@@ -235,6 +236,33 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         )
         return {"counters": _counters(), "passages": _passages_today(),
                 "days": week, "categories": cats}
+
+    @app.get("/stream")
+    def stream():
+        """Vista en vivo MJPEG con cajas dibujadas sobre el frame actual."""
+        if video_monitor is None:
+            raise HTTPException(status_code=503, detail="Stream no disponible")
+
+        def gen():
+            video_monitor.overlay_clients += 1
+            try:
+                while True:
+                    jpeg = video_monitor.latest_overlay()
+                    if jpeg:
+                        yield (
+                            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                            + str(len(jpeg)).encode()
+                            + b"\r\n\r\n"
+                            + jpeg
+                            + b"\r\n"
+                        )
+                    time.sleep(0.08)
+            finally:
+                video_monitor.overlay_clients -= 1
+
+        return StreamingResponse(
+            gen(), media_type="multipart/x-mixed-replace; boundary=frame"
+        )
 
     @app.get("/api/health")
     def api_health():

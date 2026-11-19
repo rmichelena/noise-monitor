@@ -77,6 +77,13 @@ class VideoMonitor:
         self._recent_detections: list[dict] = []
         self._lock = threading.Lock()
 
+        # Vista en vivo (MJPEG): solo se codifica si hay un cliente conectado.
+        self.overlay_clients = 0
+        self._overlay_jpeg: bytes | None = None
+        self._overlay_lock = threading.Lock()
+        self._overlay_ts = 0.0
+        self._overlay_interval = 0.1   # 10 fps de overlay como máximo
+
         # Modelo
         model_dir = self.base_dir / "models"
         self.model_path = model_dir / "ssd_mobilenet_v2_coco_edgetpu.tflite"
@@ -108,6 +115,41 @@ class VideoMonitor:
             min_displacement=float(tracker_cfg.get("min_displacement", 60)),
             passage_queue=self.passage_queue,
         )
+
+    def latest_overlay(self) -> bytes | None:
+        """Último frame anotado en JPEG (o None si nadie pidió la vista)."""
+        with self._overlay_lock:
+            return self._overlay_jpeg
+
+    def _update_overlay(self, frame: np.ndarray, detections: list[dict]):
+        """Dibuja cajas y etiquetas y guarda el frame como JPEG."""
+        img = frame.copy()
+        h, w = img.shape[:2]
+        for det in detections:
+            ymin, xmin, ymax, xmax = det["bbox"]
+            x1, y1 = int(xmin * w), int(ymin * h)
+            x2, y2 = int(xmax * w), int(ymax * h)
+            is_vehicle = det["class"] in VEHICLE_CLASSES
+            color = (80, 200, 80) if is_vehicle else (150, 150, 150)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            label = f"{det['class']} {det['score']:.2f}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.rectangle(img, (x1, max(0, y1 - th - 8)), (x1 + tw + 6, y1), color, -1)
+            cv2.putText(
+                img, label, (x1 + 3, max(12, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (10, 10, 10), 1, cv2.LINE_AA,
+            )
+        # 1080p a q70 son ~170 KB/frame (2 MB/s): para la vista en vivo se
+        # reescala a 1280 px de ancho, suficiente para leer las cajas.
+        if img.shape[1] > 1280:
+            scale = 1280.0 / img.shape[1]
+            img = cv2.resize(
+                img, (1280, int(img.shape[0] * scale)), interpolation=cv2.INTER_AREA
+            )
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+        if ok:
+            with self._overlay_lock:
+                self._overlay_jpeg = buf.tobytes()
 
     @property
     def recent_detections(self) -> list[dict]:
@@ -299,6 +341,10 @@ class VideoMonitor:
         cutoff = timestamp - self.video_seconds
         while self.video_buffer and self.video_buffer[0][0] < cutoff:
             self.video_buffer.popleft()
+
+        if self.overlay_clients and timestamp - self._overlay_ts >= self._overlay_interval:
+            self._overlay_ts = timestamp
+            self._update_overlay(frame, self.recent_detections)
 
         self._frame_count += 1
         if self._frame_count % self.inference_interval == 0:
