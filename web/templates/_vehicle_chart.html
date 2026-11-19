@@ -1,0 +1,20 @@
+{% set chart = vehicle_chart %}
+<svg class="spark" viewBox="0 0 100 60" preserveAspectRatio="none" role="img"
+     aria-label="vehículos por minuto apilados por tipo">
+  {% for b in chart.bars %}
+  <g>
+    <title>{{ b.minute }} · {{ b.total }} vehículos</title>
+    {% for s in b.segments %}
+    <rect x="{{ b.x }}" y="{{ s.y }}" width="{{ b.w }}" height="{{ s.h }}" fill="{{ s.color }}"></rect>
+    {% endfor %}
+  </g>
+  {% endfor %}
+</svg>
+{% if not chart.bars %}
+<p style="color:var(--dim);font-size:13px">Sin pasajes en las últimas 2 h.</p>
+{% endif %}
+<div class="legend">
+  <span><i style="background:#4cc2ff"></i>auto</span>
+  <span><i style="background:#ffb020"></i>camión / bus</span>
+  <span><i style="background:#ff5c5c"></i>moto</span>
+</div>

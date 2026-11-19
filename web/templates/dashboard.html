@@ -25,6 +25,11 @@
 </section>
 
 <section>
+  <h2>Vehículos por minuto · últimas 2 h (auto / camión-bus / moto)</h2>
+  <div id="vehicle-chart">{% include "_vehicle_chart.html" %}</div>
+</section>
+
+<section>
   <h2>Eventos por vehículo · clic para filtrar</h2>
   <div id="filters">{% include "_filters.html" %}</div>
 </section>
@@ -162,6 +167,7 @@ async function refreshFragments() {
   const frags = [
     ['events', eventsUrl()],
     ['spark', '/partials/spark'],
+    ['vehicle-chart', '/partials/vehicle-chart'],
     ['filters', '/partials/filters'],
     ['traffic', '/partials/traffic'],
     ['passages', passagesUrl()],

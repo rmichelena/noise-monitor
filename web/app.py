@@ -101,6 +101,60 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         )
         return list(reversed(rows))
 
+    VEHICLE_GROUPS = {"car": "car", "truck": "heavy", "bus": "heavy",
+                      "motorcycle": "moto"}
+
+    def _vehicle_bars(minutes: int = 120, height: int = 60) -> dict:
+        """Pasos por minuto, apilados por grupo: auto, pesado, moto.
+
+        Bicicletas y personas no se cuentan.
+        """
+        end = datetime.now().replace(second=0, microsecond=0)
+        start = end - timedelta(minutes=minutes - 1)
+        rows = _query(
+            "SELECT substr(timestamp, 1, 16) m, vehicle_class c, COUNT(*) n"
+            " FROM vehicle_passages WHERE timestamp >= ? GROUP BY m, c",
+            (start.strftime("%Y-%m-%dT%H:%M"),),
+        )
+        by_minute: dict[str, dict[str, int]] = {}
+        for r in rows:
+            group = VEHICLE_GROUPS.get(r["c"])
+            if not group:
+                continue
+            slot = by_minute.setdefault(r["m"], {"car": 0, "heavy": 0, "moto": 0})
+            slot[group] += r["n"]
+
+        labels = [
+            (start + timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M")
+            for i in range(minutes)
+        ]
+        counts = [by_minute.get(lbl, {"car": 0, "heavy": 0, "moto": 0}) for lbl in labels]
+        max_total = max((c["car"] + c["heavy"] + c["moto"] for c in counts), default=0)
+        scale = (height - 5) / max_total if max_total else 0
+        width = 100.0 / minutes
+        bars = []
+        for idx, (lbl, c) in enumerate(zip(labels, counts)):
+            total = c["car"] + c["heavy"] + c["moto"]
+            if not total:
+                continue
+            segments = []
+            base = height
+            for group, color in (("car", "#4cc2ff"), ("heavy", "#ffb020"), ("moto", "#ff5c5c")):
+                if not c[group]:
+                    continue
+                h = c[group] * scale
+                base -= h
+                segments.append({"y": round(base, 2), "h": round(h, 2), "color": color,
+                                 "group": group, "n": c[group]})
+            bars.append({
+                "x": round(idx * width, 2),
+                "w": round(width * 0.8, 2),
+                "total": total,
+                "minute": lbl[11:16],
+                "segments": segments,
+            })
+        return {"bars": bars, "max_total": max_total}
+
     def _sparkline(rows: list[dict], height: int = 60) -> list[dict]:
         """Convierte niveles en barras para el SVG (escala fija 0-70 dB)."""
         bars = []
@@ -227,7 +281,9 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "coral_ok": _coral_ok(),
             "events": _events(PAGE_SIZE, None, None),
             "passages": _passages_today(),
+            "passages_list": _passages(PAGE_SIZE),
             "bars": _sparkline(_levels()),
+            "vehicle_chart": _vehicle_bars(),
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -262,6 +318,10 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     @app.get("/partials/traffic", response_class=HTMLResponse)
     def partial_traffic(request: Request):
         return templates.TemplateResponse(request, "_traffic.html", _context())
+
+    @app.get("/partials/vehicle-chart", response_class=HTMLResponse)
+    def partial_vehicle_chart(request: Request):
+        return templates.TemplateResponse(request, "_vehicle_chart.html", _context())
 
     @app.get("/partials/passages", response_class=HTMLResponse)
     def partial_passages(
