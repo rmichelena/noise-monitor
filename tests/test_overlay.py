@@ -17,11 +17,15 @@ class OverlayTest(unittest.TestCase):
     def test_dibuja_sin_mutar(self):
         frame = np.zeros((360, 640, 3), dtype=np.uint8)
         original = frame.copy()
-        out = draw_frame_overlay(frame, 1700000000.0, "46.1 dB(A)")
+        out = draw_frame_overlay(frame, 1700000000.0, 46.1)
         self.assertGreater(int(out.sum()), 0, "no dibujó nada")
         self.assertEqual(int(frame.sum()), int(original.sum()), "mutó el original")
         # esquina inferior izquierda (dB) y superior izquierda (fecha)
         self.assertGreater(int(out[-60:, :300].sum()), 0)
+        # barra: debe haber al menos 3 colores distintos en la franja inferior
+        strip = out[-40:, :300].reshape(-1, 3)
+        unique = {tuple(px) for px in strip if px.any()}
+        self.assertGreaterEqual(len(unique), 3, "la barra no se dibujó")
         self.assertGreater(int(out[:60, :300].sum()), 0)
 
 

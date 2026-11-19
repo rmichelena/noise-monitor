@@ -44,8 +44,31 @@ NOISE_PRIORITY = {
 }
 
 
-def draw_frame_overlay(frame, timestamp: float, db_text: str):
-    """Devuelve una copia del frame con fecha/hora y dB quemados."""
+# Escala del indicador quemado. Hasta que haya calibración con sonómetro
+# los valores son relativos; la barra muestra la misma escala que el slider.
+DB_BAR_MAX = 75.0
+# Bandas (límite superior, color BGR): verde, amarillo, naranja, rojo.
+DB_BANDS = [
+    (40.0, (80, 200, 80)),
+    (50.0, (0, 220, 230)),
+    (60.0, (0, 150, 255)),
+    (DB_BAR_MAX, (40, 40, 220)),
+]
+
+
+def _db_color(value: float) -> tuple[int, int, int]:
+    for limit, color in DB_BANDS:
+        if value <= limit:
+            return color
+    return DB_BANDS[-1][1]
+
+
+def _dim(color: tuple[int, int, int], factor: float = 0.35):
+    return tuple(int(c * factor) for c in color)
+
+
+def draw_frame_overlay(frame, timestamp: float, db_value: float | None):
+    """Copia del frame con fecha/hora, dB y barra de nivel quemados."""
     img = frame.copy()
     h, w = img.shape[:2]
     scale = h / 1080.0
@@ -58,7 +81,34 @@ def draw_frame_overlay(frame, timestamp: float, db_text: str):
 
     stamp = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     put(stamp, int(18 * scale), int(40 * scale), 0.75 * scale)
-    put(db_text, int(18 * scale), h - int(22 * scale), 1.0 * scale)
+
+    numeric = isinstance(db_value, (int, float))
+    text = f"{db_value:.1f} dB(A)" if numeric else "— dB(A)"
+
+    # Barra de nivel: fondo segmentado tenue + relleno brillante.
+    bar_w = int(260 * scale)
+    bar_h = max(6, int(14 * scale))
+    x0 = int(18 * scale)
+    y0 = h - int(12 * scale) - bar_h
+    put(text, x0, y0 - int(10 * scale), 1.0 * scale)
+
+    seg_w = bar_w / len(DB_BANDS)
+    for i, (_, color) in enumerate(DB_BANDS):
+        cv2.rectangle(
+            img,
+            (x0 + int(i * seg_w), y0),
+            (x0 + int((i + 1) * seg_w), y0 + bar_h),
+            _dim(color),
+            -1,
+        )
+    if numeric:
+        level = max(0.0, min(float(db_value), DB_BAR_MAX))
+        fill_w = int(bar_w * level / DB_BAR_MAX)
+        if fill_w > 0:
+            cv2.rectangle(img, (x0, y0), (x0 + fill_w, y0 + bar_h), _db_color(level), -1)
+    cv2.rectangle(
+        img, (x0, y0), (x0 + bar_w, y0 + bar_h), (255, 255, 255), max(1, int(scale))
+    )
     return img
 
 
@@ -181,23 +231,17 @@ class EventManager:
         video_cfg = self.config.get("video", {})
         overlay = bool(video_cfg.get("overlay_db", True))
         every = max(1, int(video_cfg.get("overlay_every_frames", 5)))
-        db_text = "— dB(A)"
+        db_val = None
         for idx, (ts, frame) in enumerate(video_frames):
             if overlay:
                 if idx % every == 0:
-                    db_val = None
                     audio = self.audio_monitor
                     if audio is not None and hasattr(audio, "db_at"):
                         try:
                             db_val = audio.db_at(ts)
                         except Exception:
                             db_val = None
-                    db_text = (
-                        f"{db_val:.1f} dB(A)"
-                        if isinstance(db_val, (int, float))
-                        else "— dB(A)"
-                    )
-                frame = draw_frame_overlay(frame, ts, db_text)
+                frame = draw_frame_overlay(frame, ts, db_val)
             out.write(frame)
         out.release()
 
