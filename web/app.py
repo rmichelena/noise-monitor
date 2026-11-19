@@ -39,6 +39,15 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     app = FastAPI(title="Noise Monitor", version="1.0", docs_url="/api/docs")
 
+    @app.middleware("http")
+    async def no_cache(request, call_next):
+        """El dashboard cambia cada segundo: que el navegador no lo cachee."""
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/partials") or path.startswith("/api"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     def _connect() -> sqlite3.Connection:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3)
         conn.row_factory = sqlite3.Row

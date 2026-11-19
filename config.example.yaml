@@ -25,6 +25,8 @@ video:
   resolution: [1920, 1080]
   framerate: 30
   inference_interval: 2       # Procesar 1 de cada N frames
+  overlay_db: true         # quemar fecha/hora y dB en los clips
+  overlay_every_frames: 5  # refrescar el dB cada N frames
   detection_threshold: 0.5    # Confianza mínima del modelo
 
 # Buffer circular

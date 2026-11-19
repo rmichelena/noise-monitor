@@ -112,11 +112,24 @@ class AudioMonitor:
         self._level_minute: int | None = None
         self._level_vals: list[float] = []
 
+        # Historial reciente de dB por bloque, para quemar el nivel en los
+        # clips: (timestamp, dB). 30 s a 10.8 bloques/s.
+        self._db_history: deque[tuple[float, float]] = deque(maxlen=600)
+
         # YAMNet corre en un thread aparte: clasificar dentro del callback de
         # PortAudio (~100 ms) provoca "input overflow" justo en el evento que
         # hay que documentar, perdiendo muestras.
         self._classify_queue: Queue = Queue(maxsize=8)
         self._classifier_thread: threading.Thread | None = None
+
+    def db_at(self, timestamp: float, tolerance: float = 2.0) -> float | None:
+        """dB del bloque de audio más cercano al instante dado."""
+        if not self._db_history:
+            return None
+        best_ts, best_db = min(self._db_history, key=lambda item: abs(item[0] - timestamp))
+        if abs(best_ts - timestamp) > tolerance:
+            return None
+        return best_db
 
     @property
     def current_db(self) -> float:
@@ -140,6 +153,7 @@ class AudioMonitor:
 
         with self._lock:
             self._current_db = db
+        self._db_history.append((timestamp, db))
 
         self._accumulate_level(db, timestamp)
 

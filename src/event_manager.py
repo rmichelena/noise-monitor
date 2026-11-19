@@ -44,6 +44,24 @@ NOISE_PRIORITY = {
 }
 
 
+def draw_frame_overlay(frame, timestamp: float, db_text: str):
+    """Devuelve una copia del frame con fecha/hora y dB quemados."""
+    img = frame.copy()
+    h, w = img.shape[:2]
+    scale = h / 1080.0
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    thick = max(1, int(round(2 * scale)))
+
+    def put(text, x, y, size):
+        cv2.putText(img, text, (x, y), font, size, (0, 0, 0), thick + 3, cv2.LINE_AA)
+        cv2.putText(img, text, (x, y), font, size, (255, 255, 255), thick, cv2.LINE_AA)
+
+    stamp = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    put(stamp, int(18 * scale), int(40 * scale), 0.75 * scale)
+    put(db_text, int(18 * scale), h - int(22 * scale), 1.0 * scale)
+    return img
+
+
 def assign_culprit(detections: list[dict]) -> str:
     vehicle_dets = [d for d in detections if d.get("class") in NOISE_PRIORITY]
     if not vehicle_dets:
@@ -159,7 +177,27 @@ class EventManager:
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(video_path, fourcc, fps_out, actual_resolution)
-        for _, frame in video_frames:
+
+        video_cfg = self.config.get("video", {})
+        overlay = bool(video_cfg.get("overlay_db", True))
+        every = max(1, int(video_cfg.get("overlay_every_frames", 5)))
+        db_text = "— dB(A)"
+        for idx, (ts, frame) in enumerate(video_frames):
+            if overlay:
+                if idx % every == 0:
+                    db_val = None
+                    audio = self.audio_monitor
+                    if audio is not None and hasattr(audio, "db_at"):
+                        try:
+                            db_val = audio.db_at(ts)
+                        except Exception:
+                            db_val = None
+                    db_text = (
+                        f"{db_val:.1f} dB(A)"
+                        if isinstance(db_val, (int, float))
+                        else "— dB(A)"
+                    )
+                frame = draw_frame_overlay(frame, ts, db_text)
             out.write(frame)
         out.release()
 
