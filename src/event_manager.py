@@ -131,6 +131,7 @@ class EventManager:
         sample_rate: int,
         event_timestamp: float,
         mute_audio: bool = False,
+        prefix: str = "event",
     ) -> tuple[str | None, int]:
         if not audio_blocks or not video_frames:
             logger.warning("Buffers vacíos, no se puede guardar clip")
@@ -169,7 +170,7 @@ class EventManager:
             audio_span, len(audio_blocks), span, len(video_frames), fps_out,
         )
         ts = datetime.fromtimestamp(event_timestamp).strftime("%Y%m%d_%H%M%S")
-        clip_filename = f"event_{ts}.mp4"
+        clip_filename = f"{prefix}_{ts}.mp4"
         clip_path = self.clips_dir / clip_filename
 
         try:
@@ -205,6 +206,46 @@ class EventManager:
     # ------------------------------------------------------------------
     # Passage processing (from tracker via VideoMonitor.passage_queue)
     # ------------------------------------------------------------------
+    def _save_passage_clip(self, passage: dict) -> tuple[str, int]:
+        """Clip corto (5 s) alrededor del pasaje; audio mudo si hay voz."""
+        now = time.time()
+        t_end = min(now, passage["timestamp_exit"] + self.post_seconds)
+        t_start = max(passage["timestamp_enter"] - self.pre_seconds, t_end - 5.0)
+        if t_start >= t_end:
+            return "", 0
+
+        audio_list = [
+            (ts, block)
+            for ts, block in self.audio_monitor.audio_buffer
+            if t_start <= ts <= t_end
+        ]
+        video_list = [
+            (ts, frame)
+            for ts, frame in self.video_monitor.video_buffer
+            if t_start <= ts <= t_end
+        ]
+        if len(video_list) < 10 or not audio_list:
+            return "", 0
+
+        mute_audio = False
+        classifier = getattr(self.audio_monitor, "_classifier", None)
+        if classifier is not None:
+            try:
+                window = np.concatenate([b for _, b in audio_list], axis=0)
+                sound_class, _, _ = classifier.classify(
+                    window, source_sr=self.config["audio"]["sample_rate"]
+                )
+                mute_audio = sound_class in SPEECH_CLASSES
+            except Exception:
+                logger.debug("Sin clasificación para el clip del pasaje", exc_info=True)
+
+        sample_rate = self.config["audio"]["sample_rate"]
+        clip_path, duration_ms = self._save_clip(
+            audio_list, video_list, sample_rate, passage["timestamp_exit"],
+            mute_audio=mute_audio, prefix="passage",
+        )
+        return clip_path or "", duration_ms or 0
+
     def _process_passage(self, passage: dict):
         """Insert a completed vehicle passage into DB."""
         ts_enter = datetime.fromtimestamp(passage["timestamp_enter"]).strftime(
@@ -215,13 +256,21 @@ class EventManager:
         )
         db_now = self.audio_monitor.current_db
 
+        # Clip del pasaje: vehículos en movimiento, aunque no hicieran ruido.
+        clip_path = ""
+        duration_ms = 0
+        try:
+            clip_path, duration_ms = self._save_passage_clip(passage)
+        except Exception:
+            logger.exception("No se pudo guardar el clip del pasaje")
+
         conn = sqlite3.connect(self.db_path)
         cur = conn.execute(
             """
             INSERT INTO vehicle_passages
                 (timestamp, timestamp_exit, vehicle_class, lane, direction,
-                 speed_kmh, detection_score, db_at_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 speed_kmh, detection_score, db_at_time, clip_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts_enter,
@@ -232,6 +281,7 @@ class EventManager:
                 passage.get("speed_kmh"),
                 passage.get("detection_score"),
                 round(db_now, 1),
+                clip_path,
             ),
         )
         passage_id = cur.lastrowid

@@ -7,7 +7,7 @@
 {% if passages_list %}
 <table>
   <thead>
-    <tr><th>fecha · hora</th><th>clase</th><th>sentido</th><th>km/h</th><th>dB(A)</th><th>score</th></tr>
+    <tr><th>fecha · hora</th><th>clase</th><th>sentido</th><th>km/h</th><th>dB(A)</th><th>score</th><th>clip</th></tr>
   </thead>
   <tbody>
   {% for p in passages_list %}
@@ -18,6 +18,7 @@
       <td class="num">{{ "%.1f"|format(p.speed_kmh) if p.speed_kmh else "—" }}</td>
       <td class="num">{{ "%.1f"|format(p.db_at_time) if p.db_at_time else "—" }}</td>
       <td class="num">{{ "%.2f"|format(p.detection_score) if p.detection_score else "—" }}</td>
+      <td>{% if p.clip_path %}<button class="play" data-src="/api/passage-clips/{{ p.id }}" data-cap="{{ p.timestamp[5:10] }} {{ p.timestamp[11:19] }} · {{ p.vehicle_class }}">▶ ver</button>{% else %}—{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

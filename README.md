@@ -20,8 +20,12 @@ Implementado en `src/`:
   estacionados).
 - Estimación de velocidad por desplazamiento horizontal, escalada con el
   tramo de pista configurado (`speed.reference_*`).
+- Clip por pasaje: cada vehículo en movimiento guarda 5 s de video, aunque
+  no supere el umbral de ruido (`vehicle_passages.clip_path`). Solo clases
+  vehiculares; nunca personas sueltas.
 - Clips con voz: si YAMNet clasifica habla, el clip se guarda sin audio
-  (`audio_muted`), para no publicar conversaciones de terceros.
+  (`audio_muted`), para no publicar conversaciones de terceros. Aplica también
+  a los clips de pasajes.
 - Triggers por pico instantáneo o por persistencia sobre umbral.
 - Clasificación de audio con YAMNet (521 clases AudioSet) agrupadas en
   categorías: vehículo, construcción, animal, alarma, humano, otro.

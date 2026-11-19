@@ -127,7 +127,14 @@ document.getElementById('passages').addEventListener('click', (ev) => {
     activePassageFilter = null;
     syncTrafficButtons();
     refreshFragments();
+    return;
   }
+  const btn = ev.target.closest('button.play');
+  if (!btn) return;
+  playerVideo.src = btn.dataset.src;
+  playerCap.textContent = btn.dataset.cap || '';
+  player.showModal();
+  playerVideo.play().catch(() => {});
 });
 
 document.getElementById('events').addEventListener('click', (ev) => {

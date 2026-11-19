@@ -152,8 +152,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         limit: int, vehicle: str | None = None, direction: str | None = None
     ) -> list[dict]:
         sql = (
-            "SELECT timestamp, timestamp_exit, vehicle_class, lane, direction,"
-            " speed_kmh, detection_score, db_at_time"
+            "SELECT id, timestamp, timestamp_exit, vehicle_class, lane, direction,"
+            " speed_kmh, detection_score, db_at_time, clip_path"
             " FROM vehicle_passages WHERE 1=1"
         )
         params: list = []
@@ -327,6 +327,23 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         for d in video_monitor.recent_detections:
             dets.append({"class": d["class"], "score": round(d["score"], 2)})
         return {"detections": dets, "coral_ok": _coral_ok()}
+
+    @app.get("/api/passage-clips/{passage_id}")
+    def api_passage_clip(passage_id: int):
+        rows = _query(
+            "SELECT clip_path FROM vehicle_passages WHERE id = ?", (passage_id,)
+        )
+        if not rows or not rows[0]["clip_path"]:
+            raise HTTPException(status_code=404, detail="Clip no encontrado")
+        stored = Path(rows[0]["clip_path"])
+        path = (stored if stored.is_absolute() else base_dir / stored).resolve()
+        if clips_dir.resolve() not in path.parents or not path.is_file():
+            raise HTTPException(status_code=404, detail="Archivo no encontrado")
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+        )
 
     @app.get("/api/stats")
     def api_stats():
