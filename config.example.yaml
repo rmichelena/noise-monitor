@@ -36,12 +36,13 @@ buffer:
   pre_event_seconds: 5
   post_event_seconds: 5
 
-# Estimación de velocidad
+# Estimación de velocidad: dos referencias verticales sobre la pista.
+# `scripts/reference_frame.py` imprime un frame con las líneas para leer las X.
 speed:
   enabled: true
-  reference_distance_m: 10.0  # Distancia física entre líneas
-  line1_y_pixel: 400          # Coordenada Y de línea 1
-  line2_y_pixel: 680          # Coordenada Y de línea 2
+  reference_left_x: 300       # Coordenada X (px) de la referencia izquierda
+  reference_right_x: 900      # Coordenada X (px) de la referencia derecha
+  reference_distance_m: 10.0  # Distancia real entre ambas referencias (m)
 
 # Rutas (relativas al directorio del proyecto)
 paths:

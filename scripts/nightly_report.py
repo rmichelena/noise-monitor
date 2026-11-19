@@ -12,6 +12,7 @@ Uso:
 """
 
 import argparse
+import math
 import os
 import sqlite3
 import subprocess
@@ -26,7 +27,30 @@ DEFAULT_CHANNEL = "d113eafd-6fc3-4477-80ed-f08b3fc77770"  # #noise-monitor
 
 
 def _fmt(v: float | None) -> str:
-    return "n/a" if v is None else f"{v:.1f}"
+    if v is None or not math.isfinite(float(v)):
+        return "n/a"
+    return f"{v:.1f}"
+
+
+def _positive_hours(value: str) -> float:
+    """argparse type: `--hours 0` (o negativo) dejaba la ventana vacía sin avisar."""
+    try:
+        hours = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"se esperaba un número: {value!r}")
+    if hours <= 0:
+        raise argparse.ArgumentTypeError(f"debe ser > 0 (recibido: {hours})")
+    return hours
+
+
+def _end_hour(value: str) -> int:
+    try:
+        hour = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"se esperaba un entero 0-23: {value!r}")
+    if not 0 <= hour <= 23:
+        raise argparse.ArgumentTypeError(f"debe estar entre 0 y 23 (recibido: {hour})")
+    return hour
 
 
 def build_report(db: Path, start: datetime, end: datetime) -> str:
@@ -116,15 +140,18 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         levels = []
-    if levels:
-        avgs = sorted(r["db_avg"] for r in levels)
-        peaks = [r["db_max"] for r in levels]
+    avgs = sorted(v for v in (r["db_avg"] for r in levels) if v is not None)
+    peaks = [r["db_max"] for r in levels if r["db_max"] is not None]
+    if avgs:
         p50 = avgs[len(avgs) // 2]
+        # Índice del percentil 95 con ceil: `int(n*0.95)-1` daba el MÍNIMO con
+        # dos minutos (int(1.9)-1 = 0) y el noveno de diez con diez.
+        p95 = avgs[max(0, math.ceil(len(avgs) * 0.95) - 1)]
         lines.append("")
         lines.append(
-            f"**Fondo sonoro:** {len(levels)} min medidos · mediana {p50:.1f} dB(A) · "
-            f"P95 de minuto {avgs[int(len(avgs) * 0.95) - 1]:.1f} · "
-            f"pico absoluto {max(peaks):.1f} dB(A)"
+            f"**Fondo sonoro:** {len(avgs)} min medidos · mediana {p50:.1f} dB(A) · "
+            f"P95 de minuto {p95:.1f} dB(A)"
+            + (f" · pico absoluto {max(peaks):.1f} dB(A)" if peaks else "")
         )
 
     # Distribución horaria
@@ -163,8 +190,9 @@ def post(text: str, channel: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Reporte de turno del monitor de ruido")
     ap.add_argument("--db", default=str(DEFAULT_DB))
-    ap.add_argument("--hours", type=float, default=10.0, help="ventana en horas (fin: ahora)")
-    ap.add_argument("--end-hour", type=int, default=None,
+    ap.add_argument("--hours", type=_positive_hours, default=10.0,
+                    help="ventana en horas, > 0 (fin: ahora)")
+    ap.add_argument("--end-hour", type=_end_hour, default=None,
                     help="hora local de fin (0-23); por defecto, ahora")
     ap.add_argument("--post", action="store_true", help="publicar en el canal de Buzz")
     ap.add_argument("--channel", default=DEFAULT_CHANNEL)
