@@ -233,6 +233,16 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             headers={"Content-Disposition": f'inline; filename="{path.name}"'},
         )
 
+    @app.get("/api/detections")
+    def api_detections():
+        """Detecciones del último frame de inferencia (diagnóstico)."""
+        if video_monitor is None:
+            return {"detections": [], "coral_ok": None}
+        dets = []
+        for d in video_monitor.recent_detections:
+            dets.append({"class": d["class"], "score": round(d["score"], 2)})
+        return {"detections": dets, "coral_ok": _coral_ok()}
+
     @app.get("/api/stats")
     def api_stats():
         day = _today_prefix()

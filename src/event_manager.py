@@ -170,19 +170,18 @@ class EventManager:
         clip_path = self.clips_dir / clip_filename
 
         try:
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", video_path,
-                # Recompresión: el mp4v intermedio pesa ~5 MB/s a 1080p.
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "30",
-                "-pix_fmt", "yuv420p",
-            ]
+            # Todos los -i primero: cualquier opción entre dos entradas la
+            # interpreta ffmpeg como opción de la entrada siguiente.
+            cmd = ["ffmpeg", "-y", "-i", video_path]
+            if not mute_audio:
+                cmd += ["-i", f_audio.name]
+            # Recompresión: el mp4v intermedio pesa ~5 MB/s a 1080p.
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                    "-pix_fmt", "yuv420p"]
             if mute_audio:
                 cmd += ["-an"]  # voz detectada: clip sin audio
             else:
-                cmd += ["-i", f_audio.name, "-c:a", "aac", "-b:a", "64k", "-shortest"]
+                cmd += ["-c:a", "aac", "-b:a", "64k", "-shortest"]
             cmd.append(str(clip_path))
             subprocess.run(cmd, check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
