@@ -9,19 +9,24 @@ Endpoints:
   GET /api/live            dB actual + contadores del día
   GET /api/events          últimos eventos (filtros: limit, category, min_db)
   GET /api/clips/{id}      clip MP4 de un evento
+  GET /api/export/events.csv     eventos del periodo en CSV (evidencia)
+  GET /api/export/passages.csv   pasajes del periodo en CSV
   GET /api/stats           agregados de hoy / 7 días
   GET /api/health          estado del proceso web
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import math
 import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
@@ -45,6 +50,18 @@ def db_color(value: float) -> str:
             return color
     return DB_BANDS[-1][1]
 logger = logging.getLogger(__name__)
+
+EVENTS_CSV_COLUMNS = [
+    "id", "timestamp", "db_max", "db_avg", "trigger_type", "sound_class",
+    "sound_category", "sound_confidence", "vehicle_class", "lane", "confidence",
+    "passage_id", "duration_ms", "audio_muted", "pinned", "clip_path",
+]
+PASSAGES_CSV_COLUMNS = [
+    "id", "timestamp", "timestamp_exit", "vehicle_class", "lane", "direction",
+    "speed_kmh", "detection_score", "db_at_time", "noise_event_id", "pinned",
+    "clip_path",
+]
+
 
 
 def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=None) -> FastAPI:
@@ -83,7 +100,15 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         except sqlite3.Error:
             return []
         try:
-            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+            # Un -inf guardado antes del piso de silencio (o una fila heredada)
+            # se serializa como `-Infinity`, que no es JSON válido: la respuesta
+            # entera deja de parsearse en el navegador. En la API se sirve null.
+            for row in rows:
+                for key, value in row.items():
+                    if isinstance(value, float) and not math.isfinite(value):
+                        row[key] = None
+            return rows
         except sqlite3.Error as exc:
             # Sin este log una columna inexistente devolvía una lista vacía
             # y el dashboard parecía "sin datos" en vez de roto.
@@ -95,6 +120,27 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     def _today_prefix() -> str:
         return datetime.now().strftime("%Y-%m-%d")
 
+    def _since(days: int) -> str:
+        """Inicio (00:00 local) de una ventana de `days` días, hoy incluido."""
+        return (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%dT00:00:00")
+
+    def _stamp() -> str:
+        return datetime.now().strftime("%Y%m%d")
+
+    def _csv_response(rows: list[dict], columns: list[str], filename: str) -> Response:
+        """CSV completo en memoria: una semana de eventos son unos miles de filas."""
+        buf = io.StringIO()
+        writer = csv.DictWriter(
+            buf, fieldnames=columns, extrasaction="ignore", lineterminator="\r\n"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     def _counters() -> dict:
         day = _today_prefix()
         ev = _query("SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ?", (day,))
@@ -104,13 +150,17 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         )
         hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
         missing = _query(
-            "SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ? AND clip_path = ''",
+            "SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ? AND COALESCE(clip_path, '') = ''",
             (hour_ago,),
         )
+        peak = maxdb[0]["m"] if maxdb else None
         return {
             "events": ev[0]["n"] if ev else 0,
             "passages": ps[0]["n"] if ps else 0,
-            "max_db": round(maxdb[0]["m"], 1) if maxdb and maxdb[0]["m"] else None,
+            # Un -inf guardado en la base (bloque de silencio, filas antiguas)
+            # sale por la API como `-Infinity`, que no es JSON válido: ese
+            # valor deja el panel en vivo congelado en el navegador.
+            "max_db": round(peak, 1) if peak is not None and math.isfinite(peak) else None,
             "without_clip": missing[0]["n"] if missing else 0,
         }
 
@@ -118,9 +168,10 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         if audio_monitor is None:
             return None
         try:
-            return round(float(audio_monitor.current_db), 1)
+            value = float(audio_monitor.current_db)
         except Exception:
             return None
+        return round(value, 1) if math.isfinite(value) else None
 
     def _coral_ok() -> bool | None:
         if video_monitor is None:
@@ -130,6 +181,25 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     VEHICLE_GROUPS = {"car": "car", "truck": "heavy", "bus": "heavy",
                       "motorcycle": "moto"}
 
+    # Valores aceptados por los filtros. Un filtro con una errata
+    # (`?vehicle=cards`) devolvía 200 con lista vacía y el dashboard decía
+    # "sin eventos": indistinguible de un día tranquilo.
+    NOISE_CATEGORIES = set(
+        (config.get("audio_classifier") or {}).get("category_map") or {}
+    ) | {"other"}
+    VEHICLE_FILTERS = {"car", "truck", "bus", "motorcycle", "bicycle", "van",
+                       "person", "unknown"} | set(config.get("noise_priority") or {})
+    DIRECTIONS = {"ltr", "rtl"}
+
+    def _validate_filter(name: str, value: str | None, allowed: set[str]) -> None:
+        if value is not None and value not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{name} desconocido: {value!r}. "
+                    f"Valores válidos: {', '.join(sorted(allowed))}"
+                ),
+            )
     def _minute_labels(minutes: int) -> tuple[list[str], list[dict]]:
         end = datetime.now().replace(second=0, microsecond=0)
         start = end - timedelta(minutes=minutes - 1)
@@ -240,6 +310,9 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         direction: str | None = None,
         pinned_only: bool = False,
     ) -> list[dict]:
+        _validate_filter("category", category, NOISE_CATEGORIES)
+        _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
+        _validate_filter("direction", direction, DIRECTIONS)
         sql = (
             "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
             " e.sound_class, e.sound_category, e.sound_confidence, e.vehicle_class,"
@@ -278,6 +351,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         min_speed: float | None = None,
         pinned_only: bool = False,
     ) -> list[dict]:
+        _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
+        _validate_filter("direction", direction, DIRECTIONS)
         sql = (
             "SELECT id, timestamp, timestamp_exit, vehicle_class, lane, direction,"
             " speed_kmh, detection_score, db_at_time, clip_path, pinned"
@@ -449,6 +524,75 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         direction: str | None = None,
     ):
         return {"events": _events(limit, category, min_db, vehicle, direction)}
+
+    @app.get("/api/export/events.csv")
+    def export_events(
+        days: int = Query(7, ge=1, le=366),
+        min_db: float | None = None,
+        vehicle: str | None = None,
+        category: str | None = None,
+    ):
+        """Eventos de los últimos `days` días en CSV (evidencia para un reclamo)."""
+        since = _since(days)
+        sql = (
+            "SELECT id, timestamp, db_max, db_avg, trigger_type, sound_class,"
+            " sound_category, sound_confidence, vehicle_class, lane, confidence,"
+            " passage_id, duration_ms, audio_muted, pinned, clip_path"
+            " FROM noise_events WHERE timestamp >= ?"
+        )
+        params: list = [since]
+        if min_db is not None:
+            sql += " AND db_max >= ?"
+            params.append(min_db)
+        if vehicle:
+            _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
+            sql += " AND vehicle_class = ?"
+            params.append(vehicle)
+        if category:
+            _validate_filter("category", category, NOISE_CATEGORIES)
+            sql += " AND sound_category = ?"
+            params.append(category)
+        sql += " ORDER BY timestamp"
+        rows = _query(sql, tuple(params))
+        return _csv_response(
+            rows, EVENTS_CSV_COLUMNS, f"eventos_{_stamp()}.csv"
+        )
+
+    @app.get("/api/export/passages.csv")
+    def export_passages(
+        days: int = Query(7, ge=1, le=366),
+        min_db: float | None = None,
+        min_speed: float | None = None,
+        vehicle: str | None = None,
+        direction: str | None = None,
+    ):
+        """Pasajes de vehículos de los últimos `days` días en CSV."""
+        since = _since(days)
+        sql = (
+            "SELECT id, timestamp, timestamp_exit, vehicle_class, lane, direction,"
+            " speed_kmh, detection_score, db_at_time, noise_event_id, pinned, clip_path"
+            " FROM vehicle_passages WHERE timestamp >= ?"
+        )
+        params: list = [since]
+        if min_db is not None:
+            sql += " AND db_at_time >= ?"
+            params.append(min_db)
+        if min_speed is not None:
+            sql += " AND speed_kmh >= ?"
+            params.append(min_speed)
+        if vehicle:
+            _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
+            sql += " AND vehicle_class = ?"
+            params.append(vehicle)
+        if direction:
+            _validate_filter("direction", direction, DIRECTIONS)
+            sql += " AND direction = ?"
+            params.append(direction)
+        sql += " ORDER BY timestamp"
+        rows = _query(sql, tuple(params))
+        return _csv_response(
+            rows, PASSAGES_CSV_COLUMNS, f"pasajes_{_stamp()}.csv"
+        )
 
     @app.get("/api/clips/{event_id}")
     def api_clip(event_id: int):
