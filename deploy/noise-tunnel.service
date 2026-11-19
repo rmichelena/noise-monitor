@@ -1,0 +1,14 @@
+[Unit]
+Description=Noise Monitor - tunel publico Cloudflare (quick tunnel)
+After=network-online.target noise-monitor.service
+Wants=network-online.target
+
+[Service]
+User=roberto
+Group=roberto
+ExecStart=/usr/bin/cloudflared tunnel --url http://127.0.0.1:8000 --no-autoupdate
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

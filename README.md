@@ -164,6 +164,12 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   evento se conserva sin clip) y `audio_levels` de más de 400 días.
   `noise-purge.timer` lo ejecuta los domingos a las 04:00. Configurable en
   `config.yaml` → `retention`.
+- Acceso externo: `noise-tunnel.service` levanta un *quick tunnel* de
+  Cloudflare hacia `127.0.0.1:8000` (sin cuenta, sin abrir puertos). La URL
+  `https://<aleatoria>.trycloudflare.com` cambia al reiniciar el túnel y no
+  tiene garantía de uptime; para una URL fija hace falta un túnel nombrado
+  con un dominio en Cloudflare (`cloudflared tunnel login`/`create`).
+  Consultar la URL actual: `journalctl -u noise-tunnel | grep trycloudflare`.
 - Logs: `journalctl -u noise-monitor -f`.
 
 ## Privacidad y uso responsable
