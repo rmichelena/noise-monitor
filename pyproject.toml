@@ -1,0 +1,12 @@
+# Configuración de herramientas. El proyecto se instala con
+# `pip install -r requirements.txt` en un venv (ver README): no hay paquete
+# que construir, así que aquí solo vive la configuración de pytest.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Permite `pytest` desde la raíz del repo sin exportar PYTHONPATH.
+pythonpath = ["."]
+filterwarnings = [
+    # Starlette avisa del cambio a httpx2 en su TestClient; no afecta al producto.
+    "ignore:Using `httpx` with `starlette.testclient`.*",
+]
