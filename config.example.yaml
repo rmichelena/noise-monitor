@@ -24,7 +24,7 @@ video:
   source: 0                   # Índice del dispositivo USB (o "/dev/video0")
   resolution: [1920, 1080]
   framerate: 30
-  inference_interval: 5       # Procesar 1 de cada N frames
+  inference_interval: 2       # Procesar 1 de cada N frames
   detection_threshold: 0.5    # Confianza mínima del modelo
 
 # Buffer circular
@@ -54,10 +54,11 @@ web:
 
 # Centroid tracker para registro continuo de vehículos
 tracker:
-  max_distance: 200
+  max_distance: 120
   max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
-  min_track_seconds: 0.25
-  min_displacement: 150
+  min_track_seconds: 0.3
+  min_displacement: 400
+  max_track_seconds: 15
 
 # Clasificador de audio (YAMNet)
 audio_classifier:

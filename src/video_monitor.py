@@ -133,6 +133,7 @@ class VideoMonitor:
             min_displacement=float(tracker_cfg.get("min_displacement", 60)),
             passage_queue=self.passage_queue,
             px_per_m=px_per_m,
+            max_track_seconds=float(tracker_cfg.get("max_track_seconds", 15)),
         )
 
     def detections_between(self, t0: float, t1: float) -> list[dict]:

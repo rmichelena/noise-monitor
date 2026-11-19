@@ -35,6 +35,7 @@ class CentroidTracker:
         min_displacement: float = 60.0,
         passage_queue: Queue | None = None,
         px_per_m: float | None = None,
+        max_track_seconds: float = 15.0,
     ):
         self.max_distance = max_distance
         self.max_disappeared = max_disappeared
@@ -43,6 +44,9 @@ class CentroidTracker:
         self.passage_queue = passage_queue or Queue()
         # Escala horizontal de la pista (px por metro) para estimar velocidad.
         self.px_per_m = px_per_m
+        # Tracks más largos que esto suelen ser dos vehículos unidos o un
+        # objeto estacionario con jitter: no son un pasaje real.
+        self.max_track_seconds = max_track_seconds
 
         self._next_id = 0
         self._objects: OrderedDict[int, dict] = OrderedDict()
@@ -69,7 +73,7 @@ class CentroidTracker:
         del self._disappeared[object_id]
 
         duration = obj["last_seen"] - obj["first_seen"]
-        if duration < self.min_track_seconds:
+        if duration < self.min_track_seconds or duration > self.max_track_seconds:
             return
 
         sx, sy = obj["start_centroid"]
