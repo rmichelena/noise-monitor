@@ -148,6 +148,25 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             r["has_clip"] = bool(r.pop("clip_path", None))
         return rows
 
+    def _passages(
+        limit: int, vehicle: str | None = None, direction: str | None = None
+    ) -> list[dict]:
+        sql = (
+            "SELECT timestamp, timestamp_exit, vehicle_class, lane, direction,"
+            " speed_kmh, detection_score, db_at_time"
+            " FROM vehicle_passages WHERE 1=1"
+        )
+        params: list = []
+        if vehicle:
+            sql += " AND vehicle_class = ?"
+            params.append(vehicle)
+        if direction:
+            sql += " AND direction = ?"
+            params.append(direction)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return _query(sql, tuple(params))
+
     def _passages_today() -> dict:
         day = _today_prefix()
         rows = _query(
@@ -243,6 +262,17 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     @app.get("/partials/traffic", response_class=HTMLResponse)
     def partial_traffic(request: Request):
         return templates.TemplateResponse(request, "_traffic.html", _context())
+
+    @app.get("/partials/passages", response_class=HTMLResponse)
+    def partial_passages(
+        request: Request,
+        vehicle: str | None = None,
+        direction: str | None = None,
+    ):
+        ctx = _context()
+        ctx["passages_list"] = _passages(PAGE_SIZE, vehicle, direction)
+        ctx["filter_label"] = vehicle or direction
+        return templates.TemplateResponse(request, "_passages.html", ctx)
 
     # ------------------------------------------------------------------
     # API

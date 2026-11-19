@@ -30,8 +30,13 @@
 </section>
 
 <section>
-  <h2>Tráfico hoy · pasajes del tracker</h2>
+  <h2>Tráfico hoy · clic para ver pasajes</h2>
   <div id="traffic">{% include "_traffic.html" %}</div>
+</section>
+
+<section>
+  <h2>Últimos pasajes</h2>
+  <div id="passages">{% include "_passages.html" %}</div>
 </section>
 
 <section>
@@ -88,6 +93,43 @@ document.getElementById('filters').addEventListener('click', (ev) => {
 
 // Delegación: la lista de eventos se reemplaza por auto-refresh y los
 // listeners de los botones no sobreviven a un innerHTML nuevo.
+// Filtros de tráfico: actúan sobre la lista de pasajes.
+let activePassageFilter = null;
+
+function passagesUrl() {
+  if (!activePassageFilter) return '/partials/passages';
+  const p = new URLSearchParams();
+  p.set(activePassageFilter.kind, activePassageFilter.value);
+  return '/partials/passages?' + p.toString();
+}
+
+function syncTrafficButtons() {
+  document.querySelectorAll('button.tfilter').forEach((b) => {
+    const on = activePassageFilter
+      ? (b.dataset.kind === activePassageFilter.kind && b.dataset.value === activePassageFilter.value)
+      : (b.dataset.kind === 'all');
+    b.classList.toggle('active', on);
+  });
+}
+
+document.getElementById('traffic').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button.tfilter');
+  if (!btn) return;
+  activePassageFilter = btn.dataset.kind === 'all'
+    ? null
+    : {kind: btn.dataset.kind, value: btn.dataset.value};
+  syncTrafficButtons();
+  refreshFragments();
+});
+
+document.getElementById('passages').addEventListener('click', (ev) => {
+  if (ev.target.id === 'clear-passage-filter') {
+    activePassageFilter = null;
+    syncTrafficButtons();
+    refreshFragments();
+  }
+});
+
 document.getElementById('events').addEventListener('click', (ev) => {
   if (ev.target.id === 'clear-filter') {
     activeFilter = null;
@@ -115,6 +157,7 @@ async function refreshFragments() {
     ['spark', '/partials/spark'],
     ['filters', '/partials/filters'],
     ['traffic', '/partials/traffic'],
+    ['passages', passagesUrl()],
   ];
   await Promise.all(frags.map(async ([id, url]) => {
     try {
@@ -126,9 +169,11 @@ async function refreshFragments() {
     } catch (e) { /* pipeline reiniciando: se reintenta al siguiente tick */ }
   }));
   syncFilterButtons();
+  syncTrafficButtons();
 }
 setInterval(refreshFragments, 10000);
 syncFilterButtons();
+syncTrafficButtons();
 
 const liveBtn = document.getElementById('live-toggle');
 const liveImg = document.getElementById('live-img');

@@ -55,15 +55,18 @@ def assign_culprit(detections: list[dict]) -> str:
 
 
 def calculate_confidence(detections: list[dict]) -> str:
-    vehicle_dets = [d for d in detections if d.get("class") in NOISE_PRIORITY]
-    if len(vehicle_dets) == 0:
+    """Confianza en la atribución según cuántas clases compiten.
+
+    Se evalúa por clase distinta, no por número de detecciones: ventanas de
+    varios frames repiten el mismo vehículo.
+    """
+    classes = {d["class"] for d in detections if d.get("class") in NOISE_PRIORITY}
+    if not classes:
         return "low"
-    if len(vehicle_dets) == 1:
+    if len(classes) == 1:
         return "high"
-    priorities = [NOISE_PRIORITY.get(d["class"], 99) for d in vehicle_dets]
-    if min(priorities) < max(priorities):
-        return "medium"
-    return "low"
+    priorities = {NOISE_PRIORITY[c] for c in classes}
+    return "medium" if len(priorities) > 1 else "low"
 
 
 def get_lane(detections: list[dict]) -> str:
@@ -286,13 +289,25 @@ class EventManager:
         sound_category = trigger.get("sound_category", "other")
         sound_confidence = trigger.get("sound_confidence")
 
-        detections = self.video_monitor.recent_detections
-        vehicle_dets = [d for d in detections if d.get("class") in NOISE_PRIORITY]
+        # Ventana real del clip [t-pre, t+post]; se espera a que el post exista.
+        sample_rate = self.config["audio"]["sample_rate"]
+        wait = (timestamp + self.post_seconds) - time.time()
+        if wait > 0:
+            time.sleep(min(wait, self.post_seconds))
+        t_start = timestamp - self.pre_seconds
+        t_end = timestamp + self.post_seconds
 
-        # Determine vehicle info from visual detections
+        # Culpable sobre TODAS las inferencias de la ventana, no sobre el
+        # último frame: un frame suelto puede no contener los vehículos que
+        # sí pasaron durante el evento (el caso "dice person con 3 autos").
+        window_dets = self.video_monitor.detections_between(t_start, t_end)
+        if not window_dets:
+            window_dets = self.video_monitor.recent_detections
+        vehicle_dets = [d for d in window_dets if d.get("class") in NOISE_PRIORITY]
+
         if sound_category == "vehicle" or (sound_category == "other" and vehicle_dets):
-            culprit = assign_culprit(detections)
-            confidence = calculate_confidence(detections)
+            culprit = assign_culprit(window_dets)
+            confidence = calculate_confidence(window_dets)
             lane = get_lane(vehicle_dets) if vehicle_dets else "none"
         else:
             culprit = None
@@ -302,18 +317,6 @@ class EventManager:
         # Skip low-level non-vehicle events with no visual correlation
         if not vehicle_dets and db_max < self.peak_db and db_max < self.correlation_db:
             return
-
-        # Save clip: ventana temporal real [t-pre, t+post]. Se espera a que el
-        # post esté capturado; antes se recortaba por número de frames y con
-        # la cámara a 60 fps el video quedaba a la mitad de velocidad.
-        sample_rate = self.config["audio"]["sample_rate"]
-
-        wait = (timestamp + self.post_seconds) - time.time()
-        if wait > 0:
-            time.sleep(min(wait, self.post_seconds))
-
-        t_start = timestamp - self.pre_seconds
-        t_end = timestamp + self.post_seconds
 
         audio_list = [
             (ts, block)

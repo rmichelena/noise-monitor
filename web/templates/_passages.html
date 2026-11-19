@@ -1,0 +1,27 @@
+{% if filter_label %}
+<p style="color:var(--dim);font-size:13px;margin:0 0 10px">
+  Filtro: <b>{{ filter_label }}</b> ·
+  <button id="clear-passage-filter" class="play">quitar</button>
+</p>
+{% endif %}
+{% if passages_list %}
+<table>
+  <thead>
+    <tr><th>fecha · hora</th><th>clase</th><th>sentido</th><th>km/h</th><th>dB(A)</th><th>score</th></tr>
+  </thead>
+  <tbody>
+  {% for p in passages_list %}
+    <tr>
+      <td class="num">{{ p.timestamp[5:10] }} {{ p.timestamp[11:19] }}</td>
+      <td>{{ p.vehicle_class }}</td>
+      <td>{% if p.direction %}<span class="tag">{{ p.direction }}</span>{% else %}—{% endif %}</td>
+      <td class="num">{{ "%.1f"|format(p.speed_kmh) if p.speed_kmh else "—" }}</td>
+      <td class="num">{{ "%.1f"|format(p.db_at_time) if p.db_at_time else "—" }}</td>
+      <td class="num">{{ "%.2f"|format(p.detection_score) if p.detection_score else "—" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:var(--dim);font-size:13px">Sin pasajes registrados.</p>
+{% endif %}

@@ -75,6 +75,8 @@ class VideoMonitor:
 
         self.video_buffer: deque[tuple[float, np.ndarray]] = deque(maxlen=self.buffer_maxlen)
         self._recent_detections: list[dict] = []
+        self._det_history: deque[tuple[float, list[dict]]] = deque()
+        self._det_history_seconds = 12.0
         self._lock = threading.Lock()
 
         # Vista en vivo (MJPEG): solo se codifica si hay un cliente conectado.
@@ -132,6 +134,16 @@ class VideoMonitor:
             passage_queue=self.passage_queue,
             px_per_m=px_per_m,
         )
+
+    def detections_between(self, t0: float, t1: float) -> list[dict]:
+        """Todas las detecciones de las inferencias dentro de [t0, t1]."""
+        with self._lock:
+            history = list(self._det_history)
+        out: list[dict] = []
+        for ts, dets in history:
+            if t0 <= ts <= t1:
+                out.extend(dets)
+        return out
 
     def latest_overlay(self) -> bytes | None:
         """Último frame anotado en JPEG (o None si nadie pidió la vista)."""
@@ -369,6 +381,10 @@ class VideoMonitor:
             detections = self._run_inference(frame)
             with self._lock:
                 self._recent_detections = detections
+            self._det_history.append((timestamp, detections))
+            cutoff = timestamp - self._det_history_seconds
+            while self._det_history and self._det_history[0][0] < cutoff:
+                self._det_history.popleft()
             self._tracker.update(detections, timestamp)
 
         return True
