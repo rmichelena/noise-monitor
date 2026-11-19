@@ -112,7 +112,7 @@ class CentroidTracker:
         Detections must include: class, score, cx, cy, lane.
         Only vehicles are tracked.
         """
-        ts = timestamp or time.time()
+        ts = timestamp if timestamp is not None else time.time()
 
         vehicles = [d for d in detections if d.get("class") in VEHICLE_CLASSES]
 
@@ -139,17 +139,26 @@ class CentroidTracker:
             object_centroids[:, np.newaxis] - input_centroids[np.newaxis, :], axis=2
         )
 
-        # Greedy matching: closest pairs first
-        rows = dists.min(axis=1).argsort()
-        cols = dists.argmin(axis=1)[rows]
+        # Greedy matching: closest pairs first. Se ordenan TODOS los pares
+        # (objeto, detección) por distancia y se toman los más cercanos cuyo
+        # objeto y detección sigan libres. Antes se fijaba para cada objeto su
+        # columna más cercana antes de saber si seguía disponible: si dos
+        # objetos caían sobre la misma detección, el segundo se daba por
+        # perdido y la misma detección se registraba como vehículo nuevo
+        # (un pasaje partido en dos, con el clip del primero truncado).
+        candidates = [
+            (float(dists[row, col]), row, col)
+            for row in range(len(object_ids))
+            for col in range(len(vehicles))
+            if dists[row, col] <= self.max_distance
+        ]
+        candidates.sort(key=lambda item: item[0])
 
         used_rows: set[int] = set()
         used_cols: set[int] = set()
 
-        for row, col in zip(rows, cols):
+        for _dist, row, col in candidates:
             if row in used_rows or col in used_cols:
-                continue
-            if dists[row, col] > self.max_distance:
                 continue
 
             oid = object_ids[row]
