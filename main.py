@@ -12,7 +12,7 @@ from pathlib import Path
 
 from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
-from src.utils import load_config
+from src.utils import ConfigError, load_config, validate_config
 from src.video_monitor import VideoMonitor
 
 
@@ -87,7 +87,13 @@ def main():
     logger = logging.getLogger("main")
 
     base_dir = Path(__file__).parent.resolve()
-    config = load_config(base_dir / "config.yaml")
+    # Validar aquí y no dentro de los threads: una clave ausente reventaba en
+    # AudioMonitor con un KeyError sin nombre y systemd reiniciaba en bucle.
+    try:
+        config = validate_config(load_config(base_dir / "config.yaml"))
+    except (FileNotFoundError, ConfigError) as exc:
+        logger.error("Config inválida: %s", exc)
+        return 1
 
     classifier = _load_audio_classifier(config, base_dir)
 
@@ -141,7 +147,8 @@ def main():
         pass
     finally:
         shutdown()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
