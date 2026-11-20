@@ -15,6 +15,10 @@ Implementado en `src/`:
 
 - Captura continua de audio con ponderación A (IEC 61672-1) y cálculo de dB SPL.
 - Captura de video e inferencia de objetos sobre Coral Edge TPU (`ai-edge-litert`).
+- Detección por **movimiento** (MOG2) sobre la banda de calzada: cuenta los
+  vehículos que el modelo pierde (autos oscuros, poca luz). El modelo solo
+  clasifica dentro del blob; si no hay caja de modelo, cuenta como `car`.
+  Configurable en `config.yaml` → `motion` (ROI, área, aspecto, learning rate).
 - `CentroidTracker` para registro continuo de pasajes, con filtros de duración
   mínima y desplazamiento mínimo (descarta parpadeos del modelo y vehículos
   estacionados).

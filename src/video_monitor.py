@@ -17,6 +17,7 @@ import numpy as np
 from ai_edge_litert.interpreter import Interpreter, load_delegate
 
 from .utils import load_config
+from .motion_detector import MotionDetector
 from .vehicle_tracker import CentroidTracker
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,11 @@ class VideoMonitor:
         self._read_count = 0
 
         self.video_buffer: deque[tuple[float, np.ndarray]] = deque(maxlen=self.buffer_maxlen)
+        motion_cfg = self.config.get("motion", {})
+        self._motion = MotionDetector(self.config) if motion_cfg.get("enabled") else None
+        if self._motion:
+            logger.info("Detección por movimiento activa (ROI %s)", self._motion.roi)
+
         self._recent_detections: list[dict] = []
         self._det_history: deque[tuple[float, list[dict]]] = deque()
         self._det_history_seconds = 12.0
@@ -397,7 +403,12 @@ class VideoMonitor:
         self._frame_count += 1
         if self._frame_count % self.inference_interval == 0:
             self._ensure_interpreter()
-            detections = self._run_inference(frame)
+            model_detections = self._run_inference(frame)
+            if self._motion is not None:
+                blobs = self._motion.detect(frame)
+                detections = MotionDetector.classify(blobs, model_detections)
+            else:
+                detections = model_detections
             self.inference_count += 1
             for det in detections:
                 if det["class"] in VEHICLE_CLASSES:

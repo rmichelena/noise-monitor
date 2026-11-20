@@ -44,6 +44,21 @@ speed:
   line1_y_pixel: 400          # Coordenada Y de línea 1
   line2_y_pixel: 680          # Coordenada Y de línea 2
 
+# Detección por movimiento (cámara fija). Sustituye al modelo para el
+# conteo de pasajes; el modelo solo clasifica dentro del blob.
+motion:
+  enabled: true
+  roi: [0, 230, 1280, 400]   # banda de calzada en 720p
+  min_area: 1200
+  max_area: 200000
+  min_aspect: 0.6            # ancho/alto: descarta personas (altas)
+  max_aspect: 6.0
+  min_width: 20
+  var_threshold: 25
+  history: 300
+  warmup_frames: 25
+  learning_rate: 0.005       # lento: el auto no se "absorbe" al cruzar
+
 # Rutas (relativas al directorio del proyecto)
 paths:
   database: data/events.db
