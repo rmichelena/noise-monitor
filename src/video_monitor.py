@@ -61,6 +61,8 @@ class VideoMonitor:
         self.framerate = int(video_cfg["framerate"])
         self.inference_interval = int(video_cfg["inference_interval"])
         self.detection_threshold = float(video_cfg["detection_threshold"])
+        roi = video_cfg.get("detection_roi")
+        self.detection_roi = tuple(int(v) for v in roi) if roi else None
 
         self.video_seconds = int(buffer_cfg["video_seconds"])
         # La cámara entrega más fps de los configurados (medido: ~60 con
@@ -247,7 +249,15 @@ class VideoMonitor:
             return []
 
         h, w = self._input_shape
-        resized = cv2.resize(frame, (w, h))
+        frame_h, frame_w = frame.shape[:2]
+        if self.detection_roi:
+            x1, y1, x2, y2 = self.detection_roi
+            source = frame[y1:y2, x1:x2]
+        else:
+            x1 = y1 = 0
+            x2, y2 = frame_w, frame_h
+            source = frame
+        resized = cv2.resize(source, (w, h))
         input_data = np.expand_dims(resized, axis=0).astype(np.uint8)
 
         self._interpreter.set_tensor(self._input_index, input_data)
@@ -259,7 +269,8 @@ class VideoMonitor:
         count = int(self._interpreter.get_tensor(self._output_indices[3])[0])
 
         detections = []
-        frame_h, frame_w = frame.shape[:2]
+        crop_w = max(1, x2 - x1)
+        crop_h = max(1, y2 - y1)
 
         for i in range(min(count, len(scores))):
             if scores[i] < self.detection_threshold:
@@ -268,17 +279,22 @@ class VideoMonitor:
             class_id = int(classes[i])
             class_name = self.labels.get(class_id, f"id:{class_id}")
 
-            # bbox: [ymin, xmin, ymax, xmax] normalizado 0-1
+            # bbox: [ymin, xmin, ymax, xmax] normalizado 0-1 respecto al
+            # recorte de detección; se devuelve en coordenadas del frame.
             ymin, xmin, ymax, xmax = boxes[i]
-            cx = (xmin + xmax) / 2.0 * frame_w
-            cy = (ymin + ymax) / 2.0 * frame_h
+            xmin_f = (x1 + xmin * crop_w) / frame_w
+            xmax_f = (x1 + xmax * crop_w) / frame_w
+            ymin_f = (y1 + ymin * crop_h) / frame_h
+            ymax_f = (y1 + ymax * crop_h) / frame_h
+            cx = (xmin_f + xmax_f) / 2.0 * frame_w
+            cy = (ymin_f + ymax_f) / 2.0 * frame_h
             lane = "left" if cx < frame_w / 2 else "right"
 
             detections.append(
                 {
                     "class": class_name,
                     "score": float(scores[i]),
-                    "bbox": boxes[i].tolist(),
+                    "bbox": [ymin_f, xmin_f, ymax_f, xmax_f],
                     "cx": float(cx),
                     "cy": float(cy),
                     "lane": lane,
