@@ -574,6 +574,20 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             gen(), media_type="multipart/x-mixed-replace; boundary=frame"
         )
 
+    @app.get("/api/tracker")
+    def api_tracker():
+        if video_monitor is None:
+            return {"tracks": []}
+        tracker = getattr(video_monitor, "_tracker", None)
+        if tracker is None or not hasattr(tracker, "snapshot"):
+            return {"tracks": []}
+        return {
+            "tracks": tracker.snapshot(),
+            "inference_count": getattr(video_monitor, "inference_count", None),
+            "frame_count": getattr(video_monitor, "_frame_count", None),
+            "vehicles": list(getattr(video_monitor, "vehicle_log", [])),
+        }
+
     @app.get("/api/health")
     def api_health():
         return {"ok": True, "db": str(db_path), "db_exists": db_path.exists()}

@@ -178,3 +178,20 @@ class CentroidTracker:
     @property
     def active_count(self) -> int:
         return len(self._objects)
+
+    def snapshot(self) -> list[dict]:
+        """Estado de los tracks activos (diagnóstico)."""
+        out = []
+        for oid, obj in self._objects.items():
+            sx, sy = obj["start_centroid"]
+            ex, ey = obj["centroid"]
+            out.append({
+                "id": oid,
+                "class": obj["class"],
+                "first_seen": round(obj["first_seen"], 1),
+                "last_seen": round(obj["last_seen"], 1),
+                "duration": round(obj["last_seen"] - obj["first_seen"], 2),
+                "displacement": round(((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5, 1),
+                "centroid": [round(ex, 1), round(ey, 1)],
+            })
+        return out

@@ -27,7 +27,7 @@ video:
   inference_interval: 2       # Procesar 1 de cada N frames
   overlay_db: true         # quemar fecha/hora y dB en los clips
   overlay_every_frames: 5  # refrescar el dB cada N frames
-  detection_threshold: 0.15   # con ROI, el corte 0.35 perdía autos oscuros
+  detection_threshold: 0.12   # recall; con 0.35 se perdían autos oscuros
   detection_roi: [0, 150, 1280, 620]   # pista con margen en 720p
 
 # Buffer circular
@@ -57,7 +57,7 @@ web:
 
 # Centroid tracker para registro continuo de vehículos
 tracker:
-  max_distance: 80
+  max_distance: 120
   max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
   min_track_seconds: 0.3
   min_displacement: 267

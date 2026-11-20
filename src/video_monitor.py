@@ -103,6 +103,8 @@ class VideoMonitor:
         self._running = False
         self._cap: cv2.VideoCapture | None = None
         self._frame_count = 0
+        self.inference_count = 0
+        self.vehicle_log: deque = deque(maxlen=800)
 
         # Modo simulado: loop cuando el video termina
         debug_cfg = self.config.get("debug", {})
@@ -396,6 +398,13 @@ class VideoMonitor:
         if self._frame_count % self.inference_interval == 0:
             self._ensure_interpreter()
             detections = self._run_inference(frame)
+            self.inference_count += 1
+            for det in detections:
+                if det["class"] in VEHICLE_CLASSES:
+                    self.vehicle_log.append(
+                        (round(timestamp, 2), det["class"], round(det["score"], 2),
+                         round(det["cx"], 1), round(det["cy"], 1))
+                    )
             with self._lock:
                 self._recent_detections = detections
             self._det_history.append((timestamp, detections))
