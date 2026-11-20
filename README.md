@@ -173,6 +173,10 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   tiene garantía de uptime; para una URL fija hace falta un túnel nombrado
   con un dominio en Cloudflare (`cloudflared tunnel login`/`create`).
   Consultar la URL actual: `journalctl -u noise-tunnel | grep trycloudflare`.
+- Red: `noise-net-watchdog.timer` comprueba cada 60 s gateway e internet;
+  tras 3 fallos reconecta Wi-Fi (networkd + suplicante netplan) y lo deja en
+  el journal (`journalctl -t noise-net-watchdog`). DNS de respaldo
+  `1.1.1.1`/`8.8.8.8` configurado por drop-in de systemd-networkd.
 - Logs: `journalctl -u noise-monitor -f`.
 
 ## Privacidad y uso responsable

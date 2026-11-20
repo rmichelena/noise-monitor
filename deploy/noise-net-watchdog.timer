@@ -1,0 +1,10 @@
+[Unit]
+Description=Noise Monitor - chequeo de conectividad cada 60 s
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+Unit=noise-net-watchdog.service
+
+[Install]
+WantedBy=timers.target
