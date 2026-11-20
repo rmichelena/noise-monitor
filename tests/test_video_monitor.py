@@ -77,8 +77,9 @@ class RunLoopTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_loop_stops_after_consecutive_failures(self):
+    def test_loop_reopens_instead_of_dying_when_camera_stays_down(self):
         calls = []
+        opens = []
         self.monitor._running = True
         self.monitor._cap = object()  # type: ignore[assignment]
 
@@ -86,13 +87,47 @@ class RunLoopTest(unittest.TestCase):
             calls.append(1)
             return False
 
-        self.monitor.process_frame = failing  # type: ignore[method-assign]
+        def open_capture() -> bool:
+            opens.append(1)
+            self.monitor._running = False  # el test corta el loop
+            return False
 
-        with self.assertLogs("src.video_monitor", level="ERROR"):
+        self.monitor.process_frame = failing  # type: ignore[method-assign]
+        self.monitor._open_capture = open_capture  # type: ignore[method-assign]
+
+        with self.assertLogs("src.video_monitor", level="ERROR") as logs:
             self.monitor.run_loop(max_failures=3, backoff=0.01)
 
         self.assertEqual(len(calls), 3)
-        self.assertFalse(self.monitor._running)
+        self.assertEqual(len(opens), 1)
+        self.assertTrue(any("reabriendo" in line for line in logs.output))
+
+    def test_loop_resumes_after_reopen(self):
+        calls = []
+        opens = []
+        state = {"fail": True}
+        self.monitor._running = True
+        self.monitor._cap = object()  # type: ignore[assignment]
+
+        def process() -> bool:
+            calls.append(1)
+            if state["fail"]:
+                return False
+            if len(calls) >= 6:
+                self.monitor._running = False
+            return True
+
+        def open_capture() -> bool:
+            opens.append(1)
+            state["fail"] = False
+            return True
+
+        self.monitor.process_frame = process  # type: ignore[method-assign]
+        self.monitor._open_capture = open_capture  # type: ignore[method-assign]
+        self.monitor.run_loop(max_failures=2, backoff=0.01)
+
+        self.assertEqual(len(opens), 1)
+        self.assertGreaterEqual(len(calls), 6)
 
     def test_loop_keeps_going_while_frames_arrive(self):
         calls = []
