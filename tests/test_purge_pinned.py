@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Regresión: la purga borra clips viejos salvo los de eventos fijados (pinned),
-que son evidencia marcada por el dueño.
-"""
+"""La purga borra clips viejos salvo los de eventos fijados."""
 
 import os
 import sqlite3
@@ -31,8 +28,7 @@ class PurgePinnedTest(unittest.TestCase):
 
         self.pinned_clip = self.clips / "event_pinned.mp4"
         self.old_clip = self.clips / "event_old.mp4"
-        self.pinned_passage = self.clips / "passage_pinned.mp4"
-        for f in (self.pinned_clip, self.old_clip, self.pinned_passage):
+        for f in (self.pinned_clip, self.old_clip):
             f.write_bytes(b"x" * 1024)
             old = time.time() - 40 * 86400
             os.utime(f, (old, old))
@@ -48,16 +44,14 @@ class PurgePinnedTest(unittest.TestCase):
 
         conn = sqlite3.connect(self.db)
         conn.execute(
-            "INSERT INTO noise_events (timestamp, db_max, clip_path, pinned)"
-            " VALUES ('2020-01-01T00:00:00', 55, ?, 1)", (str(self.pinned_clip),)
+            "INSERT INTO events (kind, start_ts, end_ts, timestamp, db_max, clip_path, pinned)"
+            " VALUES ('noise', 1, 2, '2020-01-01T00:00:00', 55, ?, 1)",
+            (str(self.pinned_clip),),
         )
         conn.execute(
-            "INSERT INTO noise_events (timestamp, db_max, clip_path, pinned)"
-            " VALUES ('2020-01-01T00:00:01', 55, ?, 0)", (str(self.old_clip),)
-        )
-        conn.execute(
-            "INSERT INTO vehicle_passages (timestamp, vehicle_class, clip_path, pinned)"
-            " VALUES ('2020-01-01T00:00:02', 'car', ?, 1)", (str(self.pinned_passage),)
+            "INSERT INTO events (kind, start_ts, end_ts, timestamp, db_max, clip_path, pinned)"
+            " VALUES ('noise', 2, 3, '2020-01-01T00:00:01', 55, ?, 0)",
+            (str(self.old_clip),),
         )
         conn.commit()
         conn.close()
@@ -73,9 +67,8 @@ class PurgePinnedTest(unittest.TestCase):
         )
         self.assertTrue(self.pinned_clip.is_file(), "borró el clip fijado")
         self.assertFalse(self.old_clip.is_file(), "no borró el clip viejo")
-        self.assertTrue(self.pinned_passage.is_file(), "borró el clip de pasaje fijado")
         conn = sqlite3.connect(self.db)
-        rows = dict(conn.execute("SELECT pinned, clip_path FROM noise_events").fetchall())
+        rows = dict(conn.execute("SELECT pinned, clip_path FROM events").fetchall())
         conn.close()
         self.assertEqual(rows[1], str(self.pinned_clip))
         self.assertEqual(rows[0], "")

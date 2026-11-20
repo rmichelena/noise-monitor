@@ -36,6 +36,7 @@ buffer:
   video_seconds: 10
   pre_event_seconds: 5
   post_event_seconds: 5
+  traffic_clip_seconds: 5   # duración del clip de un pasaje sin ruido
 
 # Estimación de velocidad
 speed:

@@ -7,6 +7,7 @@ Utilidades base para el sistema de monitoreo de ruido.
 """
 
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -109,18 +110,17 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
             schema_sql = f.read()
 
         conn = sqlite3.connect(str(db_path))
-        for statement in schema_sql.split(";"):
-            # Strip comments and whitespace to check if there's real SQL
-            lines = [
-                l for l in statement.strip().splitlines()
-                if l.strip() and not l.strip().startswith("--")
-            ]
-            if not lines:
-                continue
-            try:
-                conn.execute(statement)
-            except sqlite3.OperationalError:
-                pass  # tolerate migration errors
+        # Quitar comentarios *antes* de partir por ';': un ';' dentro de un
+        # comentario partía el SQL por la mitad.
+        cleaned = "\n".join(
+            re.sub(r"--.*$", "", line) for line in schema_sql.splitlines()
+        )
+        for statement in cleaned.split(";"):
+            if statement.strip():
+                try:
+                    conn.execute(statement)
+                except sqlite3.OperationalError:
+                    pass  # tolera migraciones repetidas
         conn.commit()
         conn.close()
 

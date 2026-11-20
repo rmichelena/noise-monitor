@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Purga de datos antiguos del Noise Monitor.
+Purga de datos antiguos del Noise Monitor (modelo unificado `events`).
 
-- Clips MP4 con más de `retention.clip_days` días: se borran del disco y la
-  fila de `noise_events` se conserva (estadística) con `clip_path` vacío.
-- Filas de `audio_levels` con más de `retention.levels_days` días: se borran.
-- Filas con `clip_path` que apunta a un archivo inexistente: se limpian.
+- Clips con más de `retention.clip_days` días: se borran y la fila queda sin
+  clip (se conserva la estadística). Los clips de eventos fijados no se tocan.
+- Filas de `audio_levels` con más de `retention.levels_days` días.
 
 Uso:
-  python scripts/purge.py --dry-run     # solo informa
-  python scripts/purge.py               # ejecuta
+  python scripts/purge.py --dry-run
+  python scripts/purge.py
 """
 
 import argparse
@@ -37,58 +36,51 @@ def main() -> int:
 
     config = load_config(args.config or (PROJECT_DIR / "config.yaml"))
     ret = config.get("retention", {})
-    clip_days = args.clip_days if args.clip_days is not None else int(ret.get("clip_days", DEFAULT_CLIP_DAYS))
-    levels_days = args.levels_days if args.levels_days is not None else int(ret.get("levels_days", DEFAULT_LEVELS_DAYS))
+    clip_days = args.clip_days if args.clip_days is not None else int(
+        ret.get("clip_days", DEFAULT_CLIP_DAYS)
+    )
+    levels_days = args.levels_days if args.levels_days is not None else int(
+        ret.get("levels_days", DEFAULT_LEVELS_DAYS)
+    )
 
     db_path = resolve_path(config, "database", PROJECT_DIR)
     clips_dir = resolve_path(config, "clips", PROJECT_DIR)
     now = time.time()
     clip_cutoff = now - clip_days * 86400
-    levels_cutoff = (time.strftime("%Y-%m-%dT%H:%M", time.localtime(now - levels_days * 86400)))
+    levels_cutoff = time.strftime(
+        "%Y-%m-%dT%H:%M", time.localtime(now - levels_days * 86400)
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    pinned_paths: set[Path] = set()
+    for (stored,) in conn.execute(
+        "SELECT clip_path FROM events WHERE pinned = 1 AND clip_path != ''"
+    ):
+        p = Path(stored)
+        pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
 
     deleted_files = 0
     freed = 0
     cleared = 0
-
-    # Los clips de eventos fijados no se borran nunca: son la evidencia
-    # que el dueño marcó explícitamente.
-    pinned_paths: set[Path] = set()
-    try:
-        conn = sqlite3.connect(str(db_path))
-        for (stored,) in conn.execute(
-            "SELECT clip_path FROM noise_events WHERE pinned = 1 AND clip_path != ''"
-        ):
-            p = Path(stored)
-            pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
-        for (stored,) in conn.execute(
-            "SELECT clip_path FROM vehicle_passages WHERE pinned = 1 AND clip_path IS NOT NULL AND clip_path != ''"
-        ):
-            p = Path(stored)
-            pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
-        conn.close()
-    except sqlite3.Error:
-        pass
 
     if clips_dir.is_dir():
         for f in clips_dir.glob("*.mp4"):
             if f.resolve() in pinned_paths:
                 continue
             try:
-                mtime = f.stat().st_mtime
-                size = f.stat().st_size
+                stat = f.stat()
             except OSError:
                 continue
-            if mtime >= clip_cutoff:
+            if stat.st_mtime >= clip_cutoff:
                 continue
             deleted_files += 1
-            freed += size
+            freed += stat.st_size
             if not args.dry_run:
                 f.unlink(missing_ok=True)
 
-    conn = sqlite3.connect(str(db_path))
     try:
         rows = conn.execute(
-            "SELECT id, clip_path FROM noise_events"
+            "SELECT id, clip_path FROM events"
             " WHERE clip_path IS NOT NULL AND clip_path != '' AND pinned = 0"
         ).fetchall()
         for event_id, stored in rows:
@@ -103,7 +95,9 @@ def main() -> int:
             if not keep:
                 cleared += 1
                 if not args.dry_run:
-                    conn.execute("UPDATE noise_events SET clip_path = '' WHERE id = ?", (event_id,))
+                    conn.execute(
+                        "UPDATE events SET clip_path = '' WHERE id = ?", (event_id,)
+                    )
 
         old_levels = conn.execute(
             "SELECT COUNT(*) FROM audio_levels WHERE minute < ?", (levels_cutoff,)

@@ -65,10 +65,11 @@ class PassageClipTest(unittest.TestCase):
         self.em._process_passage(self.passage)
         conn = sqlite3.connect(self.db)
         row = conn.execute(
-            "SELECT clip_path FROM vehicle_passages"
+            "SELECT clip_path, kind FROM events"
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row, "no se insertó el pasaje")
+        self.assertEqual(row[1], "traffic")
         clip = row[0]
         self.assertTrue(clip, "el pasaje quedó sin clip")
         path = PROJECT_DIR / clip
