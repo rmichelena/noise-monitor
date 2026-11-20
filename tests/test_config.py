@@ -51,6 +51,24 @@ class ValidateConfigTest(unittest.TestCase):
             validate_config(self.cfg)
         self.assertIn("buffer.post_event_seconds", str(ctx.exception))
 
+    def test_missing_video_section_is_rejected(self):
+        del self.cfg["video"]
+        with self.assertRaises(ConfigError) as ctx:
+            validate_config(self.cfg)
+        self.assertIn("video", str(ctx.exception))
+
+    def test_bad_video_resolution_is_rejected(self):
+        self.cfg["video"]["resolution"] = [1280]
+        with self.assertRaises(ConfigError) as ctx:
+            validate_config(self.cfg)
+        self.assertIn("video.resolution", str(ctx.exception))
+
+    def test_impossible_detection_threshold_is_rejected(self):
+        self.cfg["video"]["detection_threshold"] = 1.5
+        with self.assertRaises(ConfigError) as ctx:
+            validate_config(self.cfg)
+        self.assertIn("video.detection_threshold", str(ctx.exception))
+
     def test_wrong_type_is_rejected(self):
         self.cfg["audio"]["sample_rate"] = "44100"
         with self.assertRaises(ConfigError) as ctx:
