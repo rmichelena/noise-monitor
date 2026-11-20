@@ -212,11 +212,16 @@ class VideoMonitor:
             self._interpreter = None
             return False
 
-        self._interpreter = Interpreter(
-            model_path=str(self.model_path),
-            experimental_delegates=[delegate],
-        )
-        self._interpreter.allocate_tensors()
+        try:
+            self._interpreter = Interpreter(
+                model_path=str(self.model_path),
+                experimental_delegates=[delegate],
+            )
+            self._interpreter.allocate_tensors()
+        except Exception:
+            logger.exception("No se pudo cargar el modelo desde %s", self.model_path)
+            self._interpreter = None
+            return False
 
         input_details = self._interpreter.get_input_details()
         output_details = self._interpreter.get_output_details()

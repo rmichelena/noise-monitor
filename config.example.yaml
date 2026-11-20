@@ -58,10 +58,10 @@ web:
 
 # Centroid tracker para registro continuo de vehículos
 tracker:
-  max_distance: 120
+  max_distance: 80      # 720p (120 en 1080p)
   max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
   min_track_seconds: 0.3
-  min_displacement: 267
+  min_displacement: 267  # ~7 m a 39 px/m (720p)
   max_track_seconds: 15
 
 # Clasificador de audio (YAMNet)
