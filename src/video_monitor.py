@@ -340,18 +340,32 @@ class VideoMonitor:
         dt = time.time() - t0
         return (n / dt) if dt > 0 and n else float(self.framerate)
 
+    def _open_capture(self) -> bool:
+        """Abre (o reabre) la fuente con la resolución pedida.
+
+        Reintentar la lectura sobre un `VideoCapture` muerto no recupera una
+        cámara USB que se reenumeró: hay que soltarla y abrirla de nuevo.
+        """
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+        cap = cv2.VideoCapture(self.source)
+        if not self._is_file_source:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+            cap.set(cv2.CAP_PROP_FPS, self.framerate)
+        if not cap.isOpened():
+            cap.release()
+            return False
+        self._cap = cap
+        return True
+
     def start(self):
         """Inicia captura e inferencia."""
         if self._running:
             return
 
-        self._cap = cv2.VideoCapture(self.source)
-        if not self._is_file_source:
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            self._cap.set(cv2.CAP_PROP_FPS, self.framerate)
-
-        if not self._cap.isOpened():
+        if not self._open_capture():
             raise RuntimeError(f"No se pudo abrir cámara {self.source}")
 
         if not self._is_file_source:
@@ -442,31 +456,44 @@ class VideoMonitor:
     def run_loop(self, max_failures: int = 30, backoff: float = 0.5):
         """Loop bloqueante de captura (para ejecutar en thread).
 
-        Cuando la cámara deja de entregar frames (`process_frame` devuelve
-        False) el loop anterior seguía llamándolo sin pausa: 100 % de CPU y
-        cero avisos hasta que systemd reiniciaba el proceso. Ahora reintenta
-        con espera y se detiene con un error explícito tras `max_failures`
-        fallos consecutivos.
+        Cuando la fuente deja de entregar frames (`process_frame` devuelve
+        False) reintenta con espera en vez de girar al 100 % de CPU. Tras
+        `max_failures` fallos suelta y reabre la cámara: un USB reenumerado no
+        se recupera leyendo el handle viejo. El hilo nunca se apaga con el
+        proceso vivo, así que un corte de más de 15 s no deja el nodo ciego
+        hasta el próximo reinicio.
         """
         failures = 0
-        while self._running and self._cap:
+        next_reopen = 0.0
+        while self._running:
             if self.process_frame():
+                if failures:
+                    logger.info(
+                        "Cámara %s recuperada tras %d fallos", self.source, failures
+                    )
                 failures = 0
                 continue
-            if not self._running or self._cap is None:
+            if not self._running:
                 return
             if self._is_file_source and not self._loop_video:
                 logger.info("Fin del video de prueba (loop_video desactivado)")
                 self._running = False
                 return
             failures += 1
-            if failures >= max_failures:
+            if failures == 1:
+                logger.warning("Cámara %s sin frames; reintentando", self.source)
+            now = time.time()
+            if failures >= max_failures and now >= next_reopen:
                 logger.error(
-                    "Cámara %s sin frames tras %d intentos: captura de video detenida",
+                    "Cámara %s sin frames tras %d intentos: reabriendo",
                     self.source, failures,
                 )
-                self._running = False
-                return
+                if self._open_capture():
+                    logger.info("Cámara %s reabierta", self.source)
+                    failures = 0
+                else:
+                    failures = 0
+                    next_reopen = now + 5.0
             time.sleep(backoff)
 
     def stop(self):
