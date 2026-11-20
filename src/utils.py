@@ -140,6 +140,12 @@ _REQUIRED_KEYS: dict[str, dict[str, tuple[type, ...]]] = {
         "database": (str,),
         "clips": (str,),
     },
+    "video": {
+        "resolution": (list, tuple),
+        "framerate": (int,),
+        "inference_interval": (int,),
+        "detection_threshold": (int, float),
+    },
 }
 
 
@@ -182,6 +188,7 @@ def validate_config(config: dict, logger: logging.Logger | None = None) -> dict:
 
     audio, triggers = config["audio"], config["triggers"]
     buffer_cfg = config["buffer"]
+    video = config["video"]
     _check_number("audio", "sample_rate", audio["sample_rate"], 8000, 768000)
     _check_number("audio", "block_size", audio["block_size"], 1, None)
     _check_number("triggers", "peak_db", triggers["peak_db"], -60, 194)
@@ -194,6 +201,22 @@ def validate_config(config: dict, logger: logging.Logger | None = None) -> dict:
     for key in ("database", "clips"):
         if not str(config["paths"][key]).strip():
             raise ConfigError(f"'paths.{key}' no puede estar vacío")
+
+    resolution = video["resolution"]
+    if (
+        len(resolution) != 2
+        or any(
+            isinstance(v, bool) or not isinstance(v, int) or v <= 0
+            for v in resolution
+        )
+    ):
+        raise ConfigError(
+            "'video.resolution' debe ser [ancho, alto] con enteros > 0 "
+            f"(recibido: {resolution!r})"
+        )
+    _check_number("video", "framerate", video["framerate"], 1, 240)
+    _check_number("video", "inference_interval", video["inference_interval"], 1, None)
+    _check_number("video", "detection_threshold", video["detection_threshold"], 0, 1)
 
     if triggers["sustained_db"] > triggers["peak_db"]:
         log.warning(
