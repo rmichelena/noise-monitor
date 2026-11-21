@@ -32,6 +32,41 @@ class OverlayTest(unittest.TestCase):
         self.assertGreater(int(out[:60, :300].sum()), 0)
 
 
+class DetectionFilterTest(unittest.TestCase):
+    def test_centro_fuera_de_calzada_se_descarta(self):
+        monitor = VideoMonitor.__new__(VideoMonitor)
+        monitor.detection_filter = (0, 220, 1280, 400)
+        self.assertTrue(monitor._in_detection_filter(640, 300))
+        self.assertFalse(monitor._in_detection_filter(640, 500))  # balcón
+        self.assertFalse(monitor._in_detection_filter(640, 180))  # árboles
+
+    def test_sin_filtro_acepta_todo(self):
+        monitor = VideoMonitor.__new__(VideoMonitor)
+        monitor.detection_filter = None
+        self.assertTrue(monitor._in_detection_filter(0, 0))
+
+
+class VehicleBoxGeometryTest(unittest.TestCase):
+    def _monitor(self):
+        monitor = VideoMonitor.__new__(VideoMonitor)
+        monitor.box_min_width = 24
+        monitor.box_max_width = 500
+        monitor.box_min_height = 14
+        monitor.box_max_height = 300
+        monitor.box_min_aspect = 0.5
+        monitor.box_max_aspect = 6.0
+        return monitor
+
+    def test_caja_gigante_se_descarta(self):
+        self.assertFalse(self._monitor()._vehicle_box_ok(820, 125))
+
+    def test_auto_normal_pasa(self):
+        self.assertTrue(self._monitor()._vehicle_box_ok(120, 50))
+
+    def test_caja_minuscula_se_descarta(self):
+        self.assertFalse(self._monitor()._vehicle_box_ok(12, 8))
+
+
 class LiveOverlayFilterTest(unittest.TestCase):
     def _monitor(self, classes):
         monitor = VideoMonitor.__new__(VideoMonitor)

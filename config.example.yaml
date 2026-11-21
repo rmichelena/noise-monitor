@@ -28,7 +28,14 @@ video:
   overlay_db: true         # quemar fecha/hora y dB en los clips
   overlay_every_frames: 5  # refrescar el dB cada N frames
   detection_threshold: 0.12   # recall; con 0.35 se perdían autos oscuros
-  detection_roi: [0, 220, 1280, 400]   # solo calzada (720p): fuera balcón, árboles y vereda
+  detection_roi: [0, 150, 1280, 620]   # recorte de inferencia: necesita contexto
+  detection_filter: [0, 220, 1280, 400]  # zona válida (calzada): descarta balcón, árboles y vereda
+  detection_min_width: 24      # px a 720p; cajas más chicas son ruido
+  detection_max_width: 500     # px; el SSD inventa cajas de 800 px
+  detection_min_height: 14
+  detection_max_height: 300
+  detection_min_aspect: 0.5
+  detection_max_aspect: 6.0
   overlay_classes: [car, truck, bus, motorcycle, bicycle]  # cajas en la vista en vivo
 
 # Buffer circular
