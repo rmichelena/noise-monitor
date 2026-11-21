@@ -72,7 +72,7 @@ class VideoMonitor:
         # gigantes (800x125, score 0.13) cuando no encuentra nada; sin este
         # límite el tracker y la vista en vivo las aceptan como autos.
         self.box_min_width = float(video_cfg.get("detection_min_width", 24))
-        self.box_max_width = float(video_cfg.get("detection_max_width", 500))
+        self.box_max_width = float(video_cfg.get("detection_max_width", 600))
         self.box_min_height = float(video_cfg.get("detection_min_height", 14))
         self.box_max_height = float(video_cfg.get("detection_max_height", 300))
         self.box_min_aspect = float(video_cfg.get("detection_min_aspect", 0.5))

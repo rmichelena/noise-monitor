@@ -50,7 +50,7 @@ class VehicleBoxGeometryTest(unittest.TestCase):
     def _monitor(self):
         monitor = VideoMonitor.__new__(VideoMonitor)
         monitor.box_min_width = 24
-        monitor.box_max_width = 500
+        monitor.box_max_width = 600
         monitor.box_min_height = 14
         monitor.box_max_height = 300
         monitor.box_min_aspect = 0.5
@@ -59,6 +59,9 @@ class VehicleBoxGeometryTest(unittest.TestCase):
 
     def test_caja_gigante_se_descarta(self):
         self.assertFalse(self._monitor()._vehicle_box_ok(820, 125))
+
+    def test_bus_largo_pasa(self):
+        self.assertTrue(self._monitor()._vehicle_box_ok(550, 200))
 
     def test_auto_normal_pasa(self):
         self.assertTrue(self._monitor()._vehicle_box_ok(120, 50))
