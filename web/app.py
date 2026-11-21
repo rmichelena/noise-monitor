@@ -27,6 +27,8 @@ from fastapi.templating import Jinja2Templates
 
 from src.utils import resolve_path
 
+from .analysis import analysis_router
+
 PAGE_SIZE = 20
 # Misma escala que el overlay de los clips.
 DB_BANDS = [
@@ -54,6 +56,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
     app = FastAPI(title="Noise Monitor", version="1.0", docs_url="/api/docs")
+
+    app.include_router(analysis_router(db_path, templates))
 
     @app.middleware("http")
     async def no_cache(request, call_next):

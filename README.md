@@ -204,3 +204,7 @@ personas identificables, matrículas y fachadas de terceros.
 ## Licencia
 
 MIT — ver [`LICENSE`](LICENSE). Copyright (c) 2026 Roberto Michelena.
+
+## Análisis acústico experimental
+
+El analizador offline y el worker opcional de clips guardados se describen en la [guía de análisis acústico](docs/acoustic-analysis.md).

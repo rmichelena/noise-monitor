@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Análisis del evento {{ result.event_id }}{% endblock %}
+{% macro metric(value, unit) -%}
+  {% if value is not none %}{{ "%.2f"|format(value) }} {{ unit }}{% else %}—{% endif %}
+{%- endmacro %}
+{% block content %}
+<section class="panel">
+  <a class="a" href="/">Volver al monitor</a>
+  <h2>Análisis del evento {{ result.event_id }}</h2>
+  {% set state = {"not_run": "Sin analizar", "pending": "Pendiente", "completed": "Completado",
+                   "failed": "Fallido", "unavailable": "Audio no disponible"} %}
+  <p>{{ state.get(result.status, result.status) }}{% if result.profile_name %} · {{ result.profile_name }}{% endif %}</p>
+  {% if result.status == "failed" %}
+  <p>Intentos registrados {{ result.attempts }}</p>
+  {% endif %}
+  {% if result.status == "completed" %}
+  <table>
+    <tbody>
+      <tr><th scope="row">Nivel equivalente del clip, LAeq</th><td>{{ metric(result.audio.laeq_dba, "dB(A)") }}</td></tr>
+      <tr><th scope="row">Máximo con respuesta Fast, LAFmax</th><td>{{ metric(result.audio.lafmax_dba, "dB(A)") }}</td></tr>
+      <tr><th scope="row">Sonoridad N5</th><td>{{ metric(result.psychoacoustics.loudness_n5_sone, "sones") }}</td></tr>
+      <tr><th scope="row">Agudeza</th><td>{{ metric(result.psychoacoustics.sharpness_acum, "acum") }}</td></tr>
+      <tr><th scope="row">Aspereza</th><td>{{ metric(result.psychoacoustics.roughness_asper, "asper") }}</td></tr>
+      <tr><th scope="row">Tonalidad (TNR)</th><td>{{ metric(result.psychoacoustics.tonality, "dB") }}</td></tr>
+      <tr><th scope="row">Molestia estimada</th><td>{{ metric(result.psychoacoustics.model_annoyance_score, "") }}</td></tr>
+    </tbody>
+  </table>
+  {% if result.audio.calibration_id %}
+  <p>Calibración {{ result.audio.calibration_id }}</p>
+  {% else %}
+  <p>Falta una calibración absoluta aplicable al clip.</p>
+  {% endif %}
+  {% if result.issue_codes %}
+  {% set issues = {"spl": "Nivel físico sin potencia medible",
+                   "psychoacoustics": "Clip demasiado corto para MoSQITo",
+                   "loudness_sharpness": "Error en sonoridad o agudeza",
+                   "roughness": "Error en aspereza", "tonality": "Error en tonalidad"} %}
+  {% for issue in result.issue_codes if issue in issues %}
+  <p>{{ issues[issue] }}</p>
+  {% endfor %}
+  {% endif %}
+  {% set place = {"indoor": "Interior probable", "outdoor": "Exterior probable", "uncertain": "Incierto"} %}
+  <h3>Atribución de fuente</h3>
+  <p>{{ place[result.classification.source_attribution] }}{% if result.classification.vehicle_source %}
+     · {{ result.classification.vehicle_source }}{% endif %}</p>
+  {% if result.classification.audio_labels %}
+  <p>Etiquetas YAMNet
+    {% for item in result.classification.audio_labels[:5] %}
+      <span class="tag">{{ item.label }} {{ "%.2f"|format(item.score) }}</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+  {% if result.classification.acoustic_behaviors %}
+  {% set behaviors = {"vehicular_horn": "Bocina vehicular", "acceleration_revving": "Aceleración",
+                      "engine_start": "Arranque de motor", "idling": "Ralentí", "dish_clatter": "Vajilla o cubiertos"} %}
+  <p>Comportamientos acústicos
+    {% for behavior in result.classification.acoustic_behaviors %}<span class="tag">{{ behaviors[behavior] }}</span>{% endfor %}
+  </p>
+  {% endif %}
+  {% if result.classification.visual_labels %}
+  <p>Clases de pasajes coincidentes
+    {% for label in result.classification.visual_labels %}<span class="tag">{{ label }}</span>{% endfor %}
+  </p>
+  {% endif %}
+  {% if result.classification.source_attribution == "outdoor" %}
+  <p>La clase de audio coincide con un pasaje en la ventana del clip. La identidad de la fuente requiere verificación.</p>
+  {% endif %}
+  {% endif %}
+  <p><a class="a" href="/api/events/{{ result.event_id }}/analysis?event_table={{ result.event_table }}">Ver datos de análisis</a></p>
+</section>
+{% endblock %}

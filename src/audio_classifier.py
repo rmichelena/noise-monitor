@@ -4,6 +4,7 @@ Corre en CPU vía ai-edge-litert. Resamplea de 44.1 kHz a 16 kHz con resampy.
 """
 
 import logging
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,7 @@ class AudioClassifier:
         self.min_score = min_score
         self.category_map = category_map
 
+        self._lock = threading.Lock()
         self._interpreter = Interpreter(model_path=str(model_path))
 
         # Pre-allocate with the exact expected input size
@@ -79,14 +81,10 @@ class AudioClassifier:
                 return cat
         return "other"
 
-    def classify(
+    def predict_scores(
         self, audio_window: np.ndarray, source_sr: int = 44100
-    ) -> tuple[str, str, float]:
-        """
-        Clasifica una ventana de audio.
-        Resamplea a 16kHz y ajusta a exactamente YAMNET_EXPECTED_SAMPLES.
-        Returns (sound_class, sound_category, score).
-        """
+    ) -> np.ndarray:
+        """Obtiene los scores AudioSet de una ventana de 0,975 s."""
         if source_sr != YAMNET_SAMPLE_RATE:
             audio = resampy.resample(
                 audio_window.astype(np.float32), source_sr, YAMNET_SAMPLE_RATE
@@ -100,14 +98,21 @@ class AudioClassifier:
         elif len(audio) < YAMNET_EXPECTED_SAMPLES:
             audio = np.pad(audio, (YAMNET_EXPECTED_SAMPLES - len(audio), 0))
 
-        self._interpreter.set_tensor(self._input_index, audio)
-        self._interpreter.invoke()
-
-        scores = self._interpreter.get_tensor(self._output_index)
+        with self._lock:
+            self._interpreter.set_tensor(self._input_index, audio)
+            self._interpreter.invoke()
+            scores = self._interpreter.get_tensor(self._output_index)
         # scores shape: (patches, 521) — average across patches
         if scores.ndim > 1:
             scores = scores.mean(axis=0)
 
+        return scores
+
+    def classify(
+        self, audio_window: np.ndarray, source_sr: int = 44100
+    ) -> tuple[str, str, float]:
+        """Mantiene la clasificación de etiqueta única usada por la captura."""
+        scores = self.predict_scores(audio_window, source_sr)
         top_idx = int(np.argmax(scores))
         top_score = float(scores[top_idx])
 

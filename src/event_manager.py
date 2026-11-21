@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # Clases de YAMNet que contienen voz humana: el audio del clip se elimina
 # antes de publicarlo (privacidad de terceros en la vía pública).
 SPEECH_CLASSES = {
-    "Speech", "Child speech", "Conversation", "Narration",
+    "Speech", "Child speech", "Child speech, kid speaking", "Conversation",
+    "Narration", "Narration, monologue",
     "Babbling", "Speech synthesizer", "Whispering",
 }
 
