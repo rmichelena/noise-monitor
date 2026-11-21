@@ -63,6 +63,14 @@ class VideoMonitor:
         self.detection_threshold = float(video_cfg["detection_threshold"])
         roi = video_cfg.get("detection_roi")
         self.detection_roi = tuple(int(v) for v in roi) if roi else None
+        # La vista en vivo dibuja solo lo que importa para el monitoreo; el
+        # modelo etiqueta plantas, sillas y mesas con 0.13 y llenaba el stream
+        # de cajas fuera del tráfico. El resto de detecciones sigue disponible
+        # para el tracker y la atribución de ruido.
+        overlay_classes = video_cfg.get("overlay_classes")
+        self.overlay_classes = (
+            set(overlay_classes) if overlay_classes else set(VEHICLE_CLASSES)
+        )
 
         self.video_seconds = int(buffer_cfg["video_seconds"])
         # La cámara entrega más fps de los configurados (medido: ~60 con
@@ -160,6 +168,8 @@ class VideoMonitor:
         img = frame.copy()
         h, w = img.shape[:2]
         for det in detections:
+            if det["class"] not in self.overlay_classes:
+                continue
             ymin, xmin, ymax, xmax = det["bbox"]
             x1, y1 = int(xmin * w), int(ymin * h)
             x2, y2 = int(xmax * w), int(ymax * h)

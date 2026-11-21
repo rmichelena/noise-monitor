@@ -28,7 +28,8 @@ video:
   overlay_db: true         # quemar fecha/hora y dB en los clips
   overlay_every_frames: 5  # refrescar el dB cada N frames
   detection_threshold: 0.12   # recall; con 0.35 se perdían autos oscuros
-  detection_roi: [0, 150, 1280, 620]   # pista con margen en 720p
+  detection_roi: [0, 220, 1280, 400]   # solo calzada (720p): fuera balcón, árboles y vereda
+  overlay_classes: [car, truck, bus, motorcycle, bicycle]  # cajas en la vista en vivo
 
 # Buffer circular
 buffer:
