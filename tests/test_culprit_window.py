@@ -71,12 +71,12 @@ class CulpritWindowTest(unittest.TestCase):
         self.em._process_trigger(self.trigger)
         conn = sqlite3.connect(self.db)
         row = conn.execute(
-            "SELECT vehicle_class, confidence, clip_path FROM noise_events"
+            "SELECT vehicle_class, kind, clip_path FROM events"
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row, "no se insertó el evento")
         self.assertEqual(row[0], "motorcycle")
-        self.assertEqual(row[1], "medium")
+        self.assertEqual(row[1], "noise")
         self.assertTrue(row[2], "el clip no se generó")
 
 

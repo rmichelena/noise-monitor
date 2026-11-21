@@ -1,76 +1,46 @@
--- Schema para el sistema de monitoreo de ruido urbano v2
--- Ejecutar: sqlite3 data/events.db < schema.sql
+-- Esquema v2 — un solo tipo de fila: "evento".
 --
--- Dos tablas principales:
---   vehicle_passages: registro continuo de cada vehículo que cruza el cuadro (tracker)
---   noise_events: eventos de ruido con clip (vehicular y no vehicular)
+-- kind:
+--   traffic  vehículo detectado por el tracker, sin trigger de audio
+--   noise    trigger de audio sin vehículo asociado
+--   both     ruido y vehículo que coinciden; un solo clip con la ventana unión
+--
+-- start_ts/end_ts son epoch y definen la ventana del clip; peak_ts es el
+-- instante del trigger cuando lo hubo.
 
--- Registro continuo de vehículos detectados por el tracker
-CREATE TABLE IF NOT EXISTS vehicle_passages (
+CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601 del momento en que el vehículo entró al cuadro
-    timestamp_exit TEXT,               -- ISO 8601 cuando salió del cuadro
-    vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
-    lane TEXT,                         -- mitad de imagen: 'left', 'right'
-    direction TEXT,                    -- sentido real: 'ltr' o 'rtl'
-    speed_kmh REAL,                    -- velocidad media estimada por píxeles
-    detection_score REAL,              -- Score promedio del modelo durante el tracking
-    db_at_time REAL,                   -- dB(A) al momento de la detección
-    clip_path TEXT,                    -- clip del pasaje (vehículos en movimiento)
-    pinned INTEGER DEFAULT 0,          -- 1 si el dueño lo marcó
+    kind TEXT NOT NULL CHECK (kind IN ('traffic', 'noise', 'both')),
+    start_ts REAL NOT NULL,
+    end_ts REAL NOT NULL,
+    peak_ts REAL,
+    timestamp TEXT NOT NULL,          -- ISO local del inicio (orden y filtros)
+    db_max REAL,
+    db_avg REAL,
+    trigger_type TEXT,
+    sound_class TEXT,
+    sound_category TEXT,
+    sound_confidence REAL,
+    vehicle_class TEXT,
+    direction TEXT,
+    lane TEXT,
+    speed_kmh REAL,
+    detection_score REAL,
+    track_id INTEGER,                 -- id del track en el tracker
+    clip_path TEXT,
+    audio_muted INTEGER DEFAULT 0,
+    pinned INTEGER DEFAULT 0,
     pinned_at TEXT,
-    noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (noise_event_id) REFERENCES noise_events(id)
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- Eventos de ruido (vehiculares y no vehiculares) con clip de audio/video
-CREATE TABLE IF NOT EXISTS noise_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601
-    db_max REAL NOT NULL,              -- Nivel máximo ponderado A
-    db_avg REAL,                       -- Nivel promedio en ventana
-    trigger_type TEXT,                 -- 'peak', 'sustained'
-    sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
-    sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
-    sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
-    vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
-    lane TEXT,                         -- 'left', 'right', 'both', 'none'
-    confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
-    passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
-    clip_path TEXT,                    -- Ruta relativa al clip
-    audio_muted INTEGER DEFAULT 0,      -- 1 si se eliminó el audio (voz)
-    pinned INTEGER DEFAULT 0,           -- 1 si el dueño lo marcó como interesante
-    pinned_at TEXT,
-    duration_ms INTEGER,               -- Duración del clip en ms
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
-);
+CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+CREATE INDEX IF NOT EXISTS idx_events_vehicle ON events(vehicle_class);
+CREATE INDEX IF NOT EXISTS idx_events_db ON events(db_max);
+CREATE INDEX IF NOT EXISTS idx_events_pinned ON events(pinned);
 
--- Migración para bases existentes (falla en silencio si ya existe)
-ALTER TABLE vehicle_passages ADD COLUMN direction TEXT;
-ALTER TABLE vehicle_passages ADD COLUMN speed_kmh REAL;
-ALTER TABLE vehicle_passages ADD COLUMN clip_path TEXT;
-ALTER TABLE vehicle_passages ADD COLUMN pinned INTEGER DEFAULT 0;
-ALTER TABLE vehicle_passages ADD COLUMN pinned_at TEXT;
-ALTER TABLE noise_events ADD COLUMN audio_muted INTEGER DEFAULT 0;
-ALTER TABLE noise_events ADD COLUMN pinned INTEGER DEFAULT 0;
-ALTER TABLE noise_events ADD COLUMN pinned_at TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
-CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);
-CREATE INDEX IF NOT EXISTS idx_ne_timestamp ON noise_events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_ne_sound_category ON noise_events(sound_category);
-CREATE INDEX IF NOT EXISTS idx_ne_vehicle_class ON noise_events(vehicle_class);
-CREATE INDEX IF NOT EXISTS idx_ne_db ON noise_events(db_max);
-
--- Migrar datos de la tabla vieja si existe
-INSERT OR IGNORE INTO noise_events (id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms)
-    SELECT id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms
-    FROM events WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='events');
-
--- Nivel de fondo por minuto: permite calibrar umbrales con datos reales
--- sin depender de clips (que solo existen cuando ya se disparó un evento).
+-- Nivel de fondo por minuto: permite calibrar umbrales con datos reales.
 CREATE TABLE IF NOT EXISTS audio_levels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     minute TEXT NOT NULL UNIQUE,      -- ISO 8601 local, 'YYYY-MM-DDTHH:MM'

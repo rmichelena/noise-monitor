@@ -30,41 +30,23 @@
 </section>
 
 <section>
-  <h2>Eventos por vehículo · clic para filtrar</h2>
+  <h2>Filtros · clic para acotar la lista</h2>
   <div id="filters">{% include "_filters.html" %}</div>
 </section>
 
 <section>
-  <h2>Tráfico hoy · clic para ver pasajes</h2>
-  <div id="traffic">{% include "_traffic.html" %}</div>
-</section>
-
-<section>
-  <h2>Últimos pasajes</h2>
-  <div class="row" style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:14px">
-    <label style="color:var(--dim);font-size:13px">
-      nivel mínimo: <b id="p-min-db-label" style="color:var(--fg)">0</b> dB(A)
-    </label>
-    <input id="p-min-db" type="range" min="0" max="75" step="1" value="0"
-           style="width:180px;accent-color:var(--accent)">
-    <label style="color:var(--dim);font-size:13px">
-      velocidad mínima: <b id="p-min-speed-label" style="color:var(--fg)">0</b> km/h
-    </label>
-    <input id="p-min-speed" type="range" min="0" max="120" step="1" value="0"
-           style="width:180px;accent-color:var(--accent)">
-    <button id="p-pinned-toggle" class="play" style="font-size:13px">★ solo fijados</button>
-  </div>
-  <div id="passages">{% include "_passages.html" %}</div>
-</section>
-
-<section>
-  <h2>Últimos eventos de ruido</h2>
+  <h2>Eventos</h2>
   <div class="row" style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:14px">
     <label style="color:var(--dim);font-size:13px">
       nivel mínimo: <b id="min-db-label" style="color:var(--fg)">0</b> dB(A)
     </label>
     <input id="min-db" type="range" min="0" max="75" step="1" value="0"
-           style="width:240px;accent-color:var(--accent)">
+           style="width:180px;accent-color:var(--accent)">
+    <label style="color:var(--dim);font-size:13px">
+      velocidad mínima: <b id="min-speed-label" style="color:var(--fg)">0</b> km/h
+    </label>
+    <input id="min-speed" type="range" min="0" max="120" step="1" value="0"
+           style="width:180px;accent-color:var(--accent)">
     <button id="pinned-toggle" class="play" style="font-size:13px">★ solo fijados</button>
   </div>
   <div id="events">{% include "_events.html" %}</div>
@@ -83,17 +65,35 @@
 
 <script>
 const player = document.getElementById('player');
-let currentEventId = null;
-let currentKind = 'event';
-let currentPinned = false;
+const playerVideo = document.getElementById('player-video');
+const playerCap = document.getElementById('player-cap');
 const pinBtn = document.getElementById('pin-btn');
-function paintPinBtn() {
-  const noun = currentKind === 'passage' ? 'este pasaje' : 'este evento';
-  pinBtn.textContent = currentPinned ? '★ Quitar marca' : `★ Fijar ${noun}`;
+let currentEventId = null;
+let currentPinned = false;
+
+function closePlayer() {
+  playerVideo.pause();
+  playerVideo.removeAttribute('src');
+  playerVideo.load();
+  player.close();
 }
+function paintPinBtn() {
+  pinBtn.textContent = currentPinned ? '★ Quitar marca' : '★ Fijar este evento';
+}
+pinBtn.addEventListener('click', async () => {
+  if (!currentEventId) return;
+  const target = currentPinned ? 0 : 1;
+  try {
+    const r = await fetch(`/api/events/${currentEventId}/pin?pinned=${target}`, {method: 'POST'});
+    if (!r.ok) return;
+    currentPinned = !!target;
+    paintPinBtn();
+    refreshFragments();
+  } catch (e) { /* reintento manual */ }
+});
+
 function openClip(btn) {
   currentEventId = btn.dataset.id ? Number(btn.dataset.id) : null;
-  currentKind = btn.dataset.kind || 'event';
   currentPinned = btn.dataset.pinned === '1';
   pinBtn.style.display = currentEventId ? 'inline-block' : 'none';
   paintPinBtn();
@@ -102,41 +102,37 @@ function openClip(btn) {
   player.showModal();
   playerVideo.play().catch(() => {});
 }
+document.getElementById('player-close').addEventListener('click', closePlayer);
+player.addEventListener('click', (ev) => { if (ev.target === player) closePlayer(); });
+player.addEventListener('close', () => { playerVideo.pause(); });
 
-pinBtn.addEventListener('click', async () => {
-  if (!currentEventId) return;
-  const target = currentPinned ? 0 : 1;
-  const base = currentKind === 'passage' ? 'passages' : 'events';
-  try {
-    const r = await fetch(`/api/${base}/${currentEventId}/pin?pinned=${target}`, {method: 'POST'});
-    if (!r.ok) return;
-    currentPinned = !!target;
-    paintPinBtn();
-    refreshFragments();
-  } catch (e) { /* reintento manual */ }
-});
-const playerVideo = document.getElementById('player-video');
-const playerCap = document.getElementById('player-cap');
-function closePlayer() {
-  playerVideo.pause();
-  playerVideo.removeAttribute('src');
-  playerVideo.load();
-  player.close();
-}
-// Filtros: los contadores de vehículos actúan sobre la lista de eventos.
-let activeFilter = null;  // {kind: 'vehicle'|'direction', value: '...'}
+// --- estado de filtros ---
+let fKind = '';
+let fVehicle = '';
+let fDirection = '';
 let minDb = 0;
+let minSpeed = 0;
 let pinnedOnly = false;
 
 const minDbInput = document.getElementById('min-db');
 const minDbLabel = document.getElementById('min-db-label');
+const minSpeedInput = document.getElementById('min-speed');
+const minSpeedLabel = document.getElementById('min-speed-label');
 const pinnedToggle = document.getElementById('pinned-toggle');
-let dbTimer = null;
+let debounceTimer = null;
+function scheduleRefresh() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(refreshFragments, 250);
+}
 minDbInput.addEventListener('input', () => {
   minDb = Number(minDbInput.value);
   minDbLabel.textContent = minDb;
-  clearTimeout(dbTimer);
-  dbTimer = setTimeout(refreshFragments, 250);
+  scheduleRefresh();
+});
+minSpeedInput.addEventListener('input', () => {
+  minSpeed = Number(minSpeedInput.value);
+  minSpeedLabel.textContent = minSpeed;
+  scheduleRefresh();
 });
 pinnedToggle.addEventListener('click', () => {
   pinnedOnly = !pinnedOnly;
@@ -147,111 +143,52 @@ pinnedToggle.addEventListener('click', () => {
 
 function eventsUrl() {
   const p = new URLSearchParams();
-  if (activeFilter) p.set(activeFilter.kind, activeFilter.value);
+  if (fKind) p.set('kind', fKind);
+  if (fVehicle) p.set('vehicle', fVehicle);
+  if (fDirection) p.set('direction', fDirection);
   if (minDb > 0) p.set('min_db', String(minDb));
+  if (minSpeed > 0) p.set('min_speed', String(minSpeed));
   if (pinnedOnly) p.set('pinned', '1');
   const qs = p.toString();
   return '/partials/events' + (qs ? '?' + qs : '');
 }
 
 function syncFilterButtons() {
-  document.querySelectorAll('button.filter').forEach((b) => {
-    const on = activeFilter
-      ? (b.dataset.kind === activeFilter.kind && b.dataset.value === activeFilter.value)
-      : (b.dataset.kind === 'all');
+  document.querySelectorAll('button.ffilter').forEach((b) => {
+    const f = b.dataset.f, v = b.dataset.v;
+    let on = false;
+    if (f === 'kind') on = fKind === v;
+    else if (f === 'vehicle') on = fVehicle === v;
+    else if (f === 'direction') on = fDirection === v;
     b.classList.toggle('active', on);
   });
 }
 
 document.getElementById('filters').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('button.filter');
+  const btn = ev.target.closest('button.ffilter');
   if (!btn) return;
-  activeFilter = btn.dataset.kind === 'all'
-    ? null
-    : {kind: btn.dataset.kind, value: btn.dataset.value};
+  const f = btn.dataset.f, v = btn.dataset.v;
+  if (f === 'kind') {
+    fKind = fKind === v ? '' : v;
+    if (v === '') fKind = '';
+  } else if (f === 'vehicle') {
+    fVehicle = fVehicle === v ? '' : v;
+  } else if (f === 'direction') {
+    fDirection = fDirection === v ? '' : v;
+  }
   syncFilterButtons();
   refreshFragments();
 });
 
-// Delegación: la lista de eventos se reemplaza por auto-refresh y los
-// listeners de los botones no sobreviven a un innerHTML nuevo.
-// Filtros de tráfico: actúan sobre la lista de pasajes.
-let activePassageFilter = null;
-let pMinDb = 0;
-let pMinSpeed = 0;
-let pPinned = false;
-
-const pMinDbInput = document.getElementById('p-min-db');
-const pMinDbLabel = document.getElementById('p-min-db-label');
-const pMinSpeedInput = document.getElementById('p-min-speed');
-const pMinSpeedLabel = document.getElementById('p-min-speed-label');
-const pPinnedToggle = document.getElementById('p-pinned-toggle');
-let pTimer = null;
-function schedulePassages() {
-  clearTimeout(pTimer);
-  pTimer = setTimeout(refreshFragments, 250);
-}
-pMinDbInput.addEventListener('input', () => {
-  pMinDb = Number(pMinDbInput.value);
-  pMinDbLabel.textContent = pMinDb;
-  schedulePassages();
-});
-pMinSpeedInput.addEventListener('input', () => {
-  pMinSpeed = Number(pMinSpeedInput.value);
-  pMinSpeedLabel.textContent = pMinSpeed;
-  schedulePassages();
-});
-pPinnedToggle.addEventListener('click', () => {
-  pPinned = !pPinned;
-  pPinnedToggle.style.color = pPinned ? 'var(--accent)' : '';
-  pPinnedToggle.textContent = pPinned ? '★ solo fijados ✓' : '★ solo fijados';
-  refreshFragments();
-});
-
-function passagesUrl() {
-  const p = new URLSearchParams();
-  if (activePassageFilter) p.set(activePassageFilter.kind, activePassageFilter.value);
-  if (pMinDb > 0) p.set('min_db', String(pMinDb));
-  if (pMinSpeed > 0) p.set('min_speed', String(pMinSpeed));
-  if (pPinned) p.set('pinned', '1');
-  const qs = p.toString();
-  return '/partials/passages' + (qs ? '?' + qs : '');
-}
-
-function syncTrafficButtons() {
-  document.querySelectorAll('button.tfilter').forEach((b) => {
-    const on = activePassageFilter
-      ? (b.dataset.kind === activePassageFilter.kind && b.dataset.value === activePassageFilter.value)
-      : (b.dataset.kind === 'all');
-    b.classList.toggle('active', on);
-  });
-}
-
-document.getElementById('traffic').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('button.tfilter');
-  if (!btn) return;
-  activePassageFilter = btn.dataset.kind === 'all'
-    ? null
-    : {kind: btn.dataset.kind, value: btn.dataset.value};
-  syncTrafficButtons();
-  refreshFragments();
-});
-
-document.getElementById('passages').addEventListener('click', (ev) => {
-  if (ev.target.id === 'clear-passage-filter') {
-    activePassageFilter = null;
-    syncTrafficButtons();
-    refreshFragments();
-    return;
-  }
-  const btn = ev.target.closest('button.play');
-  if (!btn) return;
-  openClip(btn);
-});
-
 document.getElementById('events').addEventListener('click', (ev) => {
   if (ev.target.id === 'clear-filter') {
-    activeFilter = null;
+    fKind = fVehicle = fDirection = '';
+    minDb = minSpeed = 0;
+    minDbInput.value = 0; minDbLabel.textContent = '0';
+    minSpeedInput.value = 0; minSpeedLabel.textContent = '0';
+    pinnedOnly = false;
+    pinnedToggle.textContent = '★ solo fijados';
+    pinnedToggle.style.color = '';
     syncFilterButtons();
     refreshFragments();
     return;
@@ -260,12 +197,7 @@ document.getElementById('events').addEventListener('click', (ev) => {
   if (!btn) return;
   openClip(btn);
 });
-document.getElementById('player-close').addEventListener('click', closePlayer);
-player.addEventListener('click', (ev) => { if (ev.target === player) closePlayer(); });
-player.addEventListener('close', () => { playerVideo.pause(); });
 
-// Refresco de fragmentos; la lista conserva el filtro activo. El modal vive
-// fuera de estos contenedores, así que se refresca por debajo.
 async function refreshFragments() {
   if (document.hidden) return;
   const frags = [
@@ -273,8 +205,6 @@ async function refreshFragments() {
     ['spark', '/partials/spark'],
     ['vehicle-chart', '/partials/vehicle-chart'],
     ['filters', '/partials/filters'],
-    ['traffic', '/partials/traffic'],
-    ['passages', passagesUrl()],
   ];
   await Promise.all(frags.map(async ([id, url]) => {
     try {
@@ -286,11 +216,9 @@ async function refreshFragments() {
     } catch (e) { /* pipeline reiniciando: se reintenta al siguiente tick */ }
   }));
   syncFilterButtons();
-  syncTrafficButtons();
 }
 setInterval(refreshFragments, 10000);
 syncFilterButtons();
-syncTrafficButtons();
 
 const liveBtn = document.getElementById('live-toggle');
 const liveImg = document.getElementById('live-img');
@@ -316,7 +244,7 @@ async function poll() {
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     set('db', d.db === null ? '—' : d.db);
     set('events_today', d.events_today);
-    set('passages_today', d.passages_today);
+    set('vehicles_today', d.vehicles_today);
     set('max_db', d.max_db_today === null ? '—' : d.max_db_today);
     const coral = document.getElementById('coral');
     if (coral && d.coral_ok !== null) {

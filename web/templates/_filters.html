@@ -1,22 +1,33 @@
-{% if passages.events_total %}
 <div class="grid">
-  <button class="metric filter" data-kind="all" data-value="all">
-    <div class="v">{{ passages.events_total }}</div>
-    <div class="l">todos los eventos</div>
+  <button class="metric ffilter" data-f="kind" data-v="">
+    <div class="v">{{ counters.events }}</div><div class="l">todos</div>
   </button>
-  {% for k, v in passages.events_by_class.items() %}
-  <button class="metric filter" data-kind="vehicle" data-value="{{ k }}">
-    <div class="v">{{ v }}</div>
-    <div class="l">{{ k }}</div>
+  <button class="metric ffilter" data-f="kind" data-v="traffic">
+    <div class="v">{{ summary.by_kind.get("traffic", 0) }}</div><div class="l">tráfico</div>
+  </button>
+  <button class="metric ffilter" data-f="kind" data-v="noise">
+    <div class="v">{{ summary.by_kind.get("noise", 0) }}</div><div class="l">ruido</div>
+  </button>
+  <button class="metric ffilter" data-f="kind" data-v="both">
+    <div class="v">{{ summary.by_kind.get("both", 0) }}</div><div class="l">ambos</div>
+  </button>
+  {% for k, v in summary.by_class.items() %}
+  <button class="metric ffilter" data-f="vehicle" data-v="{{ k }}">
+    <div class="v">{{ v }}</div><div class="l">{{ k }}</div>
   </button>
   {% endfor %}
-  {% for k, v in passages.events_by_dir.items() %}
-  <button class="metric filter" data-kind="direction" data-value="{{ k }}">
+  {% for k, v in summary.by_dir.items() %}
+  <button class="metric ffilter" data-f="direction" data-v="{{ k }}">
     <div class="v">{{ v }}</div>
     <div class="l">{% if k == "ltr" %}izq→der{% else %}der→izq{% endif %}</div>
   </button>
   {% endfor %}
 </div>
-{% else %}
-<p style="color:var(--dim);font-size:13px">Sin eventos hoy.</p>
+{% if summary.speed.avg is not none %}
+<div class="grid" style="margin-top:14px">
+  <div class="metric"><div class="v">{{ summary.speed.avg }}</div>
+    <div class="l">km/h promedio ({{ summary.speed.n }})</div></div>
+  <div class="metric"><div class="v">{{ summary.speed.max }}</div>
+    <div class="l">km/h máximo</div></div>
+</div>
 {% endif %}

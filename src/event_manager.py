@@ -1,11 +1,15 @@
 """
-Event Manager v2: dos flujos independientes.
+Event Manager v3 — modelo unificado.
 
-1. Passages (del CentroidTracker via VideoMonitor) → vehicle_passages
-2. Triggers (del AudioMonitor, enriquecidos con YAMNet) → noise_events + clips
+Todo se guarda en la tabla `events` con `kind`:
+  traffic  vehículo del tracker, sin trigger de audio
+  noise    trigger de audio sin vehículo
+  both     ambos coinciden: una fila y un clip con la ventana unión
+           start = min(inicio_ruido, inicio_vehículo)
+           end   = max(fin_ruido, fin_vehículo)
 
-Correlación: si un trigger vehicular coincide con un passage reciente,
-se linkean via passage_id / noise_event_id.
+El clip se genera una sola vez por evento; si llega la segunda mitad del
+match se reescribe con la unión y se borra el anterior.
 """
 
 import logging
@@ -16,7 +20,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty
 
 import cv2
 import numpy as np
@@ -42,7 +46,6 @@ NOISE_PRIORITY = {
     "bicycle": 4,
     "person": 5,
 }
-
 
 # Escala del indicador quemado. Hasta que haya calibración con sonómetro
 # los valores son relativos; la barra muestra la misma escala que el slider.
@@ -85,7 +88,6 @@ def draw_frame_overlay(frame, timestamp: float, db_value: float | None):
     numeric = isinstance(db_value, (int, float))
     text = f"{db_value:.1f} dB(A)" if numeric else "— dB(A)"
 
-    # Barra de nivel: fondo segmentado tenue + relleno brillante.
     bar_w = int(260 * scale)
     bar_h = max(6, int(14 * scale))
     x0 = int(18 * scale)
@@ -123,11 +125,7 @@ def assign_culprit(detections: list[dict]) -> str:
 
 
 def calculate_confidence(detections: list[dict]) -> str:
-    """Confianza en la atribución según cuántas clases compiten.
-
-    Se evalúa por clase distinta, no por número de detecciones: ventanas de
-    varios frames repiten el mismo vehículo.
-    """
+    """Confianza en la atribución según cuántas clases compiten."""
     classes = {d["class"] for d in detections if d.get("class") in NOISE_PRIORITY}
     if not classes:
         return "low"
@@ -149,11 +147,7 @@ def get_lane(detections: list[dict]) -> str:
 
 
 class EventManager:
-    """
-    Consume dos colas en threads separados:
-      - passage_queue  → INSERT vehicle_passages
-      - trigger_queue  → correlación + clips + INSERT noise_events
-    """
+    """Consume las colas de pasajes y triggers y escribe filas unificadas."""
 
     def __init__(
         self,
@@ -170,10 +164,9 @@ class EventManager:
         buffer_cfg = self.config["buffer"]
         self.pre_seconds = int(buffer_cfg["pre_event_seconds"])
         self.post_seconds = int(buffer_cfg["post_event_seconds"])
+        self.traffic_clip_seconds = float(buffer_cfg.get("traffic_clip_seconds", 5))
         self.peak_db = float(self.config["triggers"]["peak_db"])
         self.correlation_db = float(self.config["triggers"]["correlation_db"])
-        # Espaciado mínimo entre eventos: evita guardar un clip por segundo
-        # cuando hay tráfico continuo (cada clip cuesta CPU y disco).
         self.cooldown_seconds = float(self.config["triggers"].get("cooldown_seconds", 0))
         self._last_event_ts = 0.0
 
@@ -184,14 +177,68 @@ class EventManager:
         init_database(self.config, self.base_dir)
         self._running = False
 
-        # Cache de passages recientes para correlación rápida (últimos 30s)
-        self._recent_passages: list[dict] = []
-        self._passages_lock = threading.Lock()
-        self._PASSAGE_TTL = 30.0  # seconds
+        # Eventos recientes para casar ruido con vehículo (en cualquier orden).
+        self._recent: list[dict] = []
+        self._lock = threading.Lock()
+        self._TTL = 30.0
 
     # ------------------------------------------------------------------
-    # Clip saving (unchanged logic)
+    # Buffers y clips
     # ------------------------------------------------------------------
+    def _slice(self, t0: float, t1: float):
+        audio = [
+            (ts, block)
+            for ts, block in list(self.audio_monitor.audio_buffer)
+            if t0 <= ts <= t1
+        ]
+        video = [
+            (ts, frame)
+            for ts, frame in list(self.video_monitor.video_buffer)
+            if t0 <= ts <= t1
+        ]
+        return audio, video
+
+    def _buffer_bounds(self) -> tuple[float, float] | None:
+        audio = list(self.audio_monitor.audio_buffer)
+        video = list(self.video_monitor.video_buffer)
+        if not audio or not video:
+            return None
+        start = max(audio[0][0], video[0][0])
+        end = min(audio[-1][0], video[-1][0])
+        return (start, end) if start < end else None
+
+    def _speech_in(self, audio_blocks) -> bool:
+        classifier = getattr(self.audio_monitor, "_classifier", None)
+        if classifier is None or not audio_blocks:
+            return False
+        try:
+            window = np.concatenate([b for _, b in audio_blocks], axis=0)
+            sound_class, _, _ = classifier.classify(
+                window, source_sr=self.config["audio"]["sample_rate"]
+            )
+            return sound_class in SPEECH_CLASSES
+        except Exception:
+            logger.debug("Sin clasificación para el clip", exc_info=True)
+            return False
+
+    def _encode(self, t0: float, t1: float, ts: float, mute: bool,
+                prefix: str, suffix: str = "") -> tuple[str, int]:
+        bounds = self._buffer_bounds()
+        if bounds is None:
+            return "", 0
+        t0 = max(t0, bounds[0])
+        t1 = min(t1, bounds[1])
+        if t1 - t0 < 0.5:
+            return "", 0
+        audio, video = self._slice(t0, t1)
+        if len(video) < 5 or not audio:
+            return "", 0
+        path, duration = self._save_clip(
+            audio, video, self.config["audio"]["sample_rate"], ts,
+            mute_audio=mute, prefix=prefix, suffix=suffix,
+        )
+        return path or "", duration or 0
+
     def _save_clip(
         self,
         audio_blocks: list[tuple[float, np.ndarray]],
@@ -200,6 +247,7 @@ class EventManager:
         event_timestamp: float,
         mute_audio: bool = False,
         prefix: str = "event",
+        suffix: str = "",
     ) -> tuple[str | None, int]:
         if not audio_blocks or not video_frames:
             logger.warning("Buffers vacíos, no se puede guardar clip")
@@ -251,21 +299,18 @@ class EventManager:
             "Clip: audio %.2fs (%d bloques), video %.2fs (%d frames, %.1f fps)",
             audio_span, len(audio_blocks), span, len(video_frames), fps_out,
         )
-        ts = datetime.fromtimestamp(event_timestamp).strftime("%Y%m%d_%H%M%S")
-        clip_filename = f"{prefix}_{ts}.mp4"
+        ts_tag = datetime.fromtimestamp(event_timestamp).strftime("%Y%m%d_%H%M%S")
+        clip_filename = f"{prefix}_{ts_tag}{suffix}.mp4"
         clip_path = self.clips_dir / clip_filename
 
         try:
-            # Todos los -i primero: cualquier opción entre dos entradas la
-            # interpreta ffmpeg como opción de la entrada siguiente.
             cmd = ["ffmpeg", "-y", "-i", video_path]
             if not mute_audio:
                 cmd += ["-i", f_audio.name]
-            # Recompresión: el mp4v intermedio pesa ~5 MB/s a 1080p.
             cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
                     "-pix_fmt", "yuv420p"]
             if mute_audio:
-                cmd += ["-an"]  # voz detectada: clip sin audio
+                cmd += ["-an"]
             else:
                 cmd += ["-c:a", "aac", "-b:a", "64k", "-shortest"]
             cmd.append(str(clip_path))
@@ -277,135 +322,208 @@ class EventManager:
             Path(f_audio.name).unlink(missing_ok=True)
             Path(video_path).unlink(missing_ok=True)
 
-        # Ruta relativa al proyecto (antes estaba fija a data/clips, que solo
-        # coincide por casualidad con la config por defecto).
         try:
             stored = clip_path.relative_to(self.base_dir)
         except ValueError:
             stored = clip_path
         return str(stored), duration_ms
 
-    # ------------------------------------------------------------------
-    # Passage processing (from tracker via VideoMonitor.passage_queue)
-    # ------------------------------------------------------------------
-    def _save_passage_clip(self, passage: dict) -> tuple[str, int]:
-        """Clip corto (5 s) alrededor del pasaje; audio mudo si hay voz."""
-        now = time.time()
-        t_end = min(now, passage["timestamp_exit"] + self.post_seconds)
-        t_start = max(passage["timestamp_enter"] - self.pre_seconds, t_end - 5.0)
-        if t_start >= t_end:
-            return "", 0
-
-        audio_list = [
-            (ts, block)
-            for ts, block in self.audio_monitor.audio_buffer
-            if t_start <= ts <= t_end
-        ]
-        video_list = [
-            (ts, frame)
-            for ts, frame in self.video_monitor.video_buffer
-            if t_start <= ts <= t_end
-        ]
-        if len(video_list) < 10 or not audio_list:
-            return "", 0
-
-        mute_audio = False
-        classifier = getattr(self.audio_monitor, "_classifier", None)
-        if classifier is not None:
-            try:
-                window = np.concatenate([b for _, b in audio_list], axis=0)
-                sound_class, _, _ = classifier.classify(
-                    window, source_sr=self.config["audio"]["sample_rate"]
-                )
-                mute_audio = sound_class in SPEECH_CLASSES
-            except Exception:
-                logger.debug("Sin clasificación para el clip del pasaje", exc_info=True)
-
-        sample_rate = self.config["audio"]["sample_rate"]
-        clip_path, duration_ms = self._save_clip(
-            audio_list, video_list, sample_rate, passage["timestamp_exit"],
-            mute_audio=mute_audio, prefix="passage",
-        )
-        return clip_path or "", duration_ms or 0
-
-    def _process_passage(self, passage: dict):
-        """Insert a completed vehicle passage into DB."""
-        ts_enter = datetime.fromtimestamp(passage["timestamp_enter"]).strftime(
-            "%Y-%m-%dT%H:%M:%S"
-        )
-        ts_exit = datetime.fromtimestamp(passage["timestamp_exit"]).strftime(
-            "%Y-%m-%dT%H:%M:%S"
-        )
-        db_now = self.audio_monitor.current_db
-
-        # Clip del pasaje: vehículos en movimiento, aunque no hicieran ruido.
-        clip_path = ""
-        duration_ms = 0
+    def _delete_clip(self, stored: str | None):
+        if not stored:
+            return
+        path = Path(stored)
+        if not path.is_absolute():
+            path = self.base_dir / path
         try:
-            clip_path, duration_ms = self._save_passage_clip(passage)
-        except Exception:
-            logger.exception("No se pudo guardar el clip del pasaje")
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("No se pudo borrar el clip viejo %s", path)
 
+    # ------------------------------------------------------------------
+    # Persistencia y matching
+    # ------------------------------------------------------------------
+    def _remember(self, row: dict):
+        with self._lock:
+            now = time.time()
+            self._recent = [r for r in self._recent if now - r["end_ts"] < self._TTL]
+            self._recent.append(row)
+
+    def _update_recent(self, event_id: int, **fields):
+        with self._lock:
+            for r in self._recent:
+                if r["id"] == event_id:
+                    r.update(fields)
+
+    def _best_overlap(self, start: float, end: float, kinds: tuple[str, ...]):
+        with self._lock:
+            best = None
+            best_overlap = 0.0
+            for r in self._recent:
+                if r["kind"] not in kinds:
+                    continue
+                overlap = min(end, r["end_ts"]) - max(start, r["start_ts"])
+                if overlap > best_overlap:
+                    best, best_overlap = r, overlap
+            return dict(best) if best else None
+
+    def _insert(self, **f) -> int:
         conn = sqlite3.connect(self.db_path)
         cur = conn.execute(
             """
-            INSERT INTO vehicle_passages
-                (timestamp, timestamp_exit, vehicle_class, lane, direction,
-                 speed_kmh, detection_score, db_at_time, clip_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO events
+                (kind, start_ts, end_ts, peak_ts, timestamp, db_max, db_avg,
+                 trigger_type, sound_class, sound_category, sound_confidence,
+                 vehicle_class, direction, lane, speed_kmh, detection_score,
+                 track_id, clip_path, audio_muted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                ts_enter,
-                ts_exit,
-                passage["vehicle_class"],
-                passage.get("lane"),
-                passage.get("direction"),
-                passage.get("speed_kmh"),
-                passage.get("detection_score"),
-                round(db_now, 1),
-                clip_path,
+                f["kind"], f["start_ts"], f["end_ts"], f.get("peak_ts"),
+                datetime.fromtimestamp(f["start_ts"]).strftime("%Y-%m-%dT%H:%M:%S"),
+                f.get("db_max"), f.get("db_avg"), f.get("trigger_type"),
+                f.get("sound_class"), f.get("sound_category"),
+                f.get("sound_confidence"), f.get("vehicle_class"),
+                f.get("direction"), f.get("lane"), f.get("speed_kmh"),
+                f.get("detection_score"), f.get("track_id"),
+                f.get("clip_path", ""), 1 if f.get("audio_muted") else 0,
             ),
         )
-        passage_id = cur.lastrowid
+        event_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return event_id
+
+    def _update(self, event_id: int, **f):
+        allowed = {
+            "kind", "start_ts", "end_ts", "peak_ts", "timestamp",
+            "db_max", "db_avg", "trigger_type", "sound_class",
+            "sound_category", "sound_confidence", "vehicle_class",
+            "direction", "lane", "speed_kmh", "detection_score",
+            "track_id", "clip_path", "audio_muted",
+        }
+        fields = {k: v for k, v in f.items() if k in allowed}
+        if not fields:
+            return
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            f"UPDATE events SET {sets} WHERE id = ?",
+            (*fields.values(), event_id),
+        )
         conn.commit()
         conn.close()
 
-        # Keep in memory for correlation
-        passage["db_id"] = passage_id
-        with self._passages_lock:
-            now = time.time()
-            self._recent_passages = [
-                p for p in self._recent_passages
-                if now - p["timestamp_exit"] < self._PASSAGE_TTL
-            ]
-            self._recent_passages.append(passage)
+    def _merge(self, event: dict, *, start: float, end: float,
+               passage: dict | None = None, trigger: dict | None = None,
+               culprit: str | None = None, lane: str | None = None):
+        """Fusiona las dos mitades en una fila `both` con clip unión."""
+        t0 = min(start, event["start_ts"])
+        t1 = max(end, event["end_ts"])
+        peak = (trigger or {}).get("timestamp") or event.get("peak_ts") or t0
+        mute = (trigger or {}).get("sound_class") in SPEECH_CLASSES
+        audio, _ = self._slice(t0, t1)
+        mute = mute or self._speech_in(audio)
+
+        suffix = f"_{int(t0 * 10) % 10000:04d}"
+        clip, _ = self._encode(t0, t1, peak, mute, "event", suffix=suffix)
+        old_clip = event.get("clip_path")
+        if clip and old_clip and clip != old_clip:
+            self._delete_clip(old_clip)
+        elif not clip:
+            clip = old_clip or ""
+
+        db_max = event.get("db_max")
+        if trigger and trigger.get("db") is not None:
+            db_max = max(db_max or 0, trigger["db"])
+        fields = {
+            "kind": "both",
+            "start_ts": t0,
+            "end_ts": t1,
+            "peak_ts": peak,
+            "timestamp": datetime.fromtimestamp(t0).strftime("%Y-%m-%dT%H:%M:%S"),
+            "db_max": db_max,
+            "db_avg": (trigger or {}).get("db_avg", event.get("db_avg")),
+            "trigger_type": (trigger or {}).get("type") or event.get("trigger_type"),
+            "sound_class": (trigger or {}).get("sound_class") or event.get("sound_class"),
+            "sound_category": (trigger or {}).get("sound_category") or event.get("sound_category"),
+            "sound_confidence": (trigger or {}).get("sound_confidence") or event.get("sound_confidence"),
+            "vehicle_class": (
+                (passage or {}).get("vehicle_class")
+                or event.get("vehicle_class")
+                or (culprit if culprit not in (None, "unknown") else None)
+            ),
+            "direction": (passage or {}).get("direction") or event.get("direction"),
+            "lane": (
+                (passage or {}).get("lane")
+                or event.get("lane")
+                or (lane if lane not in (None, "none") else None)
+            ),
+            "speed_kmh": (passage or {}).get("speed_kmh") or event.get("speed_kmh"),
+            "detection_score": (passage or {}).get("detection_score") or event.get("detection_score"),
+            "track_id": (passage or {}).get("track_id") or event.get("track_id"),
+            "clip_path": clip,
+            "audio_muted": 1 if mute else 0,
+        }
+        self._update(event["id"], **fields)
+        self._update_recent(event["id"], **fields)
 
         logger.info(
-            "Passage #%d: %s (%s) %.1f dB @ %s",
-            passage_id,
-            passage["vehicle_class"],
-            passage.get("lane", "?"),
-            db_now,
-            ts_enter,
+            "Evento #%d fusionado (%s): %s .. %s clip=%s%s",
+            event["id"], fields["kind"],
+            datetime.fromtimestamp(t0).strftime("%H:%M:%S"),
+            datetime.fromtimestamp(t1).strftime("%H:%M:%S"),
+            clip or "none", " (audio mudo)" if mute else "",
         )
 
-    def _find_matching_passage(self, vehicle_class: str, timestamp: float) -> int | None:
-        """Find a recent passage of the same class within ±PASSAGE_TTL."""
-        with self._passages_lock:
-            best = None
-            best_dt = float("inf")
-            for p in self._recent_passages:
-                if p["vehicle_class"] == vehicle_class:
-                    dt = abs(p["timestamp_exit"] - timestamp)
-                    if dt < best_dt:
-                        best_dt = dt
-                        best = p
-            if best and best_dt < self._PASSAGE_TTL:
-                return best.get("db_id")
-        return None
+    # ------------------------------------------------------------------
+    # Pasajes (tráfico)
+    # ------------------------------------------------------------------
+    def _process_passage(self, passage: dict):
+        enter = passage["timestamp_enter"]
+        exit_ts = passage["timestamp_exit"]
+        t1 = min(time.time(), exit_ts + 2.0)
+        t0 = max(enter - 2.0, t1 - self.traffic_clip_seconds)
+
+        # ¿Hay un evento de ruido solapado al que pertenezca?
+        noise = self._best_overlap(enter, exit_ts, kinds=("noise",))
+        if noise:
+            self._merge(noise, start=min(t0, noise["start_ts"]),
+                        end=max(t1, noise["end_ts"]), passage=passage)
+            return
+
+        audio, _ = self._slice(t0, t1)
+        mute = self._speech_in(audio)
+        suffix = f"_{int(enter * 10) % 10000:04d}"
+        clip, dur = self._encode(t0, t1, exit_ts, mute, "traffic", suffix=suffix)
+        event_id = self._insert(
+            kind="traffic", start_ts=t0, end_ts=t1, peak_ts=None,
+            db_max=None, db_avg=None, vehicle_class=passage["vehicle_class"],
+            direction=passage.get("direction"), lane=passage.get("lane"),
+            speed_kmh=passage.get("speed_kmh"),
+            detection_score=passage.get("detection_score"),
+            track_id=passage.get("track_id"), clip_path=clip,
+            audio_muted=mute,
+        )
+        self._remember({
+            "id": event_id, "kind": "traffic", "start_ts": t0, "end_ts": t1,
+            "peak_ts": None, "clip_path": clip, "vehicle_class": passage["vehicle_class"],
+            "direction": passage.get("direction"), "lane": passage.get("lane"),
+            "speed_kmh": passage.get("speed_kmh"),
+            "detection_score": passage.get("detection_score"),
+            "track_id": passage.get("track_id"),
+            "db_max": None, "db_avg": None, "trigger_type": None,
+            "sound_class": None, "sound_category": None, "sound_confidence": None,
+            "audio_muted": mute,
+        })
+        logger.info(
+            "Evento #%d tráfico: %s (%s) %.1f km/h @ %s",
+            event_id, passage["vehicle_class"], passage.get("lane", "?"),
+            passage.get("speed_kmh") or 0.0,
+            datetime.fromtimestamp(enter).strftime("%H:%M:%S"),
+        )
 
     # ------------------------------------------------------------------
-    # Trigger processing (from AudioMonitor.event_queue)
+    # Triggers (ruido)
     # ------------------------------------------------------------------
     def _process_trigger(self, trigger: dict):
         trigger_type = trigger["type"]
@@ -416,113 +534,77 @@ class EventManager:
         if self.cooldown_seconds > 0 and timestamp - self._last_event_ts < self.cooldown_seconds:
             return
 
-        # YAMNet classification (may be absent if classifier not loaded)
         sound_class = trigger.get("sound_class")
         sound_category = trigger.get("sound_category", "other")
         sound_confidence = trigger.get("sound_confidence")
 
-        # Ventana real del clip [t-pre, t+post]; se espera a que el post exista.
-        sample_rate = self.config["audio"]["sample_rate"]
+        # Esperar a que el post exista en los buffers.
         wait = (timestamp + self.post_seconds) - time.time()
         if wait > 0:
             time.sleep(min(wait, self.post_seconds))
         t_start = timestamp - self.pre_seconds
         t_end = timestamp + self.post_seconds
 
-        # Culpable sobre TODAS las inferencias de la ventana, no sobre el
-        # último frame: un frame suelto puede no contener los vehículos que
-        # sí pasaron durante el evento (el caso "dice person con 3 autos").
         window_dets = self.video_monitor.detections_between(t_start, t_end)
         if not window_dets:
             window_dets = self.video_monitor.recent_detections
         vehicle_dets = [d for d in window_dets if d.get("class") in NOISE_PRIORITY]
 
+        culprit = None
+        lane = "none"
         if sound_category == "vehicle" or (sound_category == "other" and vehicle_dets):
             culprit = assign_culprit(window_dets)
-            confidence = calculate_confidence(window_dets)
             lane = get_lane(vehicle_dets) if vehicle_dets else "none"
-        else:
-            culprit = None
-            confidence = "low"
-            lane = "none"
 
-        # Skip low-level non-vehicle events with no visual correlation
         if not vehicle_dets and db_max < self.peak_db and db_max < self.correlation_db:
             return
 
-        audio_list = [
-            (ts, block)
-            for ts, block in self.audio_monitor.audio_buffer
-            if t_start <= ts <= t_end
-        ]
-        video_list = [
-            (ts, frame)
-            for ts, frame in self.video_monitor.video_buffer
-            if t_start <= ts <= t_end
-        ]
+        # ¿Coincide con un pasaje ya registrado?
+        traffic = self._best_overlap(t_start, t_end, kinds=("traffic",))
+        if traffic:
+            self._merge(traffic, start=min(t_start, traffic["start_ts"]),
+                        end=max(t_end, traffic["end_ts"]), trigger=trigger,
+                        culprit=culprit, lane=lane)
+            self._last_event_ts = timestamp
+            return
 
-        mute_audio = sound_class in SPEECH_CLASSES
-        clip_path, duration_ms = self._save_clip(
-            audio_list, video_list, sample_rate, timestamp, mute_audio=mute_audio
+        mute = sound_class in SPEECH_CLASSES
+        audio, _ = self._slice(t_start, t_end)
+        mute = mute or self._speech_in(audio)
+        suffix = f"_{int(timestamp * 10) % 10000:04d}"
+        clip, dur = self._encode(t_start, t_end, timestamp, mute, "noise", suffix=suffix)
+
+        event_id = self._insert(
+            kind="noise", start_ts=t_start, end_ts=t_end, peak_ts=timestamp,
+            db_max=db_max, db_avg=db_avg, trigger_type=trigger_type,
+            sound_class=sound_class, sound_category=sound_category,
+            sound_confidence=sound_confidence, vehicle_class=culprit,
+            direction=None, lane=lane, speed_kmh=None, detection_score=None,
+            track_id=None, clip_path=clip, audio_muted=mute,
         )
-        if clip_path is None:
-            clip_path = ""
-            duration_ms = 0
-
-        # Correlate with passage if vehicular
-        passage_id = None
-        if culprit and culprit != "unknown":
-            passage_id = self._find_matching_passage(culprit, timestamp)
-
-        ts_iso = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%dT%H:%M:%S")
-
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.execute(
-            """
-            INSERT INTO noise_events
-                (timestamp, db_max, db_avg, trigger_type,
-                 sound_class, sound_category, sound_confidence,
-                 vehicle_class, lane, confidence,
-                 passage_id, clip_path, audio_muted, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ts_iso, db_max, db_avg, trigger_type,
-                sound_class, sound_category, sound_confidence,
-                culprit, lane, confidence,
-                passage_id, clip_path, 1 if mute_audio else 0, duration_ms,
-            ),
-        )
-        noise_event_id = cur.lastrowid
-
-        # Link passage back to noise event
-        if passage_id:
-            conn.execute(
-                "UPDATE vehicle_passages SET noise_event_id = ? WHERE id = ?",
-                (noise_event_id, passage_id),
-            )
-
-        conn.commit()
-        conn.close()
+        self._remember({
+            "id": event_id, "kind": "noise", "start_ts": t_start, "end_ts": t_end,
+            "peak_ts": timestamp, "clip_path": clip, "db_max": db_max,
+            "db_avg": db_avg, "trigger_type": trigger_type,
+            "sound_class": sound_class, "sound_category": sound_category,
+            "sound_confidence": sound_confidence, "vehicle_class": culprit,
+            "direction": None, "lane": lane, "speed_kmh": None,
+            "detection_score": None, "track_id": None, "audio_muted": mute,
+        })
         self._last_event_ts = timestamp
 
         logger.info(
-            "NoiseEvent #%d: %.1f dB, %s/%s (%s) clip=%s%s @ %s",
-            noise_event_id,
-            db_max,
-            sound_category or "?",
-            sound_class or "?",
-            culprit or "none",
-            clip_path or "none",
-            " (audio mudo)" if mute_audio else "",
-            ts_iso,
+            "Evento #%d ruido: %.1f dB, %s/%s (%s) clip=%s%s @ %s",
+            event_id, db_max, sound_category or "?", sound_class or "?",
+            culprit or "none", clip or "none",
+            " (audio mudo)" if mute else "",
+            datetime.fromtimestamp(timestamp).strftime("%H:%M:%S"),
         )
 
     # ------------------------------------------------------------------
-    # Run loops
+    # Loops
     # ------------------------------------------------------------------
     def _passage_loop(self):
-        """Consume passage_queue from the tracker."""
         passage_queue = self.video_monitor.passage_queue
         while self._running:
             try:
@@ -534,7 +616,6 @@ class EventManager:
                 logger.exception("Error procesando passage: %s", e)
 
     def _trigger_loop(self):
-        """Consume trigger_queue from AudioMonitor."""
         while self._running:
             try:
                 trigger = self.audio_monitor.event_queue.get(timeout=0.5)
@@ -545,13 +626,12 @@ class EventManager:
                 logger.exception("Error procesando trigger: %s", e)
 
     def run(self):
-        """Start both consumer loops in separate threads."""
         self._running = True
         self._t_passage = threading.Thread(
             target=self._passage_loop, daemon=True, name="passage-consumer"
         )
         self._t_passage.start()
-        self._trigger_loop()  # run trigger loop in current thread
+        self._trigger_loop()
 
     def stop(self):
         self._running = False

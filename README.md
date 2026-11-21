@@ -13,6 +13,10 @@ fuente y hora— en lugar de percepciones subjetivas.
 
 Implementado en `src/`:
 
+- Modelo unificado de eventos: una tabla `events` con `kind`
+  (`traffic` / `noise` / `both`). Cuando ruido y vehículo coinciden se
+  fusionan en una sola fila y el clip cubre la unión de ambas ventanas.
+- Captura a 720p por defecto (menos CPU, RAM y ancho de banda).
 - Captura continua de audio con ponderación A (IEC 61672-1) y cálculo de dB SPL.
 - Captura de video e inferencia de objetos sobre Coral Edge TPU (`ai-edge-litert`).
 - `CentroidTracker` para registro continuo de pasajes, con filtros de duración
@@ -165,6 +169,8 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
 - Retención: `scripts/purge.py` borra clips de más de 30 días (la fila del
   evento se conserva sin clip) y `audio_levels` de más de 400 días. Los clips
   de eventos **fijados** (`pinned`) no se borran nunca.
+- Migración al esquema v2 (descarta datos): parar el servicio y ejecutar
+  `venv/bin/python scripts/reset_v2.py --yes --drop-clips`.
   `noise-purge.timer` lo ejecuta los domingos a las 04:00. Configurable en
   `config.yaml` → `retention`.
 - Acceso externo: `noise-tunnel.service` levanta un *quick tunnel* de

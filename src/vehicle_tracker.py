@@ -97,6 +97,7 @@ class CentroidTracker:
 
         avg_score = float(np.mean(obj["scores"])) if obj["scores"] else 0.0
         self.passage_queue.put({
+            "track_id": object_id,
             "vehicle_class": obj["class"],
             "lane": obj["lane"],
             "direction": direction,
