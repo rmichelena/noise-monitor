@@ -46,7 +46,11 @@ class AudioMonitor:
         self.config = config or load_config()
         settings = Settings.load(self.config)
         psycho = (self.config.get("triggers") or {}).get("psychoacoustic") or {}
-        queue_size = max(1, min(64, int(psycho.get("queue_size", 8))))
+        try:
+            queue_size = int(psycho.get("queue_size") or 8)
+        except (TypeError, ValueError):
+            queue_size = 8
+        queue_size = max(1, min(64, queue_size))
         self.event_queue = event_queue or Queue(maxsize=queue_size if settings else 0)
         self.base_dir = Path(base_dir or os.getcwd())
         self._classifier = audio_classifier
@@ -150,9 +154,15 @@ class AudioMonitor:
             return self._current_db
 
     def trigger_status(self):
-        if self._perceptual_trigger:
-            return self._perceptual_trigger.status()
-        return {"criterion": "dba", "peak_db": self.peak_db, "sustained_db": self.sustained_db}
+        status = (
+            self._perceptual_trigger.status()
+            if self._perceptual_trigger
+            else {"criterion": "dba", "peak_db": self.peak_db, "sustained_db": self.sustained_db}
+        )
+        manager = getattr(self, "event_manager", None)
+        if manager is not None:
+            status.update(manager.status())
+        return status
 
     def _process_block(self, block: np.ndarray, timestamp: float):
         """Procesa un bloque de audio: A-weighting, buffer, triggers."""
@@ -215,6 +225,11 @@ class AudioMonitor:
     def classify_event_clip(self, blocks):
         """Review all audio that would be persisted by a perceptual trigger."""
         if self._classifier is None or not blocks:
+            if self._classifier is None and not getattr(self, "_no_classifier_warned", False):
+                logger.warning(
+                    "Sin clasificador YAMNet: los clips psicoacústicos se guardan sin audio"
+                )
+                self._no_classifier_warned = True
             return None, "other", None, True
         window = np.concatenate([block for _, block in blocks])
         size = round(.975 * self.sample_rate)

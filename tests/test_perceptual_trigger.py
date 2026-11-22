@@ -47,7 +47,7 @@ class PerceptualTriggerTests(unittest.TestCase):
         config = self.config()
         config["triggers"]["psychoacoustic"]["window_seconds"] = 2
         config["buffer"].update(audio_seconds=2, video_seconds=2, pre_event_seconds=1, post_event_seconds=1)
-        with self.assertRaisesRegex(ValueError, "tiempo de cálculo"):
+        with self.assertRaisesRegex(ValueError, "margen"):
             Settings.load(config)
 
     def test_live_score_calibrates_input_and_rejects_digital_saturation(self):

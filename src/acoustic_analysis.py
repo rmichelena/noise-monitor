@@ -263,7 +263,7 @@ class ClipAnalyzer:
                 issues["calibration"] = calibration_issue or "sin calibración absoluta para este clip"
             elif calibration.get("codec", codec) != codec:
                 issues["calibration"] = "calibración incompatible con el códec de la pista"
-            elif np.max(np.abs(samples)) >= digital_limit:
+            elif np.max(np.abs(samples)) > digital_limit:
                 issues["calibration"] = "audio saturado o con sobremodulación"
             else:
                 result["audio"]["calibration_id"] = calibration["id"]

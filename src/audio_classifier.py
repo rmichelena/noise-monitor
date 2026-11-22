@@ -123,7 +123,7 @@ class AudioClassifier:
         scores = self.predict_scores(audio_window, source_sr)
         if scores.shape != (len(self.labels),) or not np.isfinite(scores).all():
             raise ValueError("scores o mapa de etiquetas YAMNet inválidos")
-        speech = any(label in SPEECH_CLASSES and score >= self.min_score
+        speech = any(label in SPEECH_CLASSES and score >= min(self.min_score, 0.15)
                      for label, score in zip(self.labels, scores))
         return (*self._best_label(scores), speech)
 

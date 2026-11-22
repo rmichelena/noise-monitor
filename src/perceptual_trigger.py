@@ -71,16 +71,20 @@ class Settings:
         # Reserve one audio block for timestamp quantization at the ring boundary.
         block_time = config["audio"]["block_size"] / config["audio"]["sample_rate"]
         max_age = buffer_seconds - pre - block_time
-        if max_age <= window / 2:
-            raise ValueError("los buffers no dejan tiempo de cálculo después de la ventana psicoacústica")
-        # Latencia observada en el ThinkCentre: ~1,6 s para loudness y ~5,6 s
-        # para PA. Si el evento no cabe antes de que el pre-roll se evacue,
-        # no se debe aceptar la configuración (antes expiraba en silencio).
-        min_age = 6.5 if metric == "annoyance_pa" else 2.5
-        if max_age < min_age:
+        # La ventana se centra medio window antes del último bloque; el
+        # resultado llega tras el hop y la latencia del scorer. Todo eso debe
+        # caber antes de que el pre-roll se evacue.
+        default_latency = 5.6 if metric == "annoyance_pa" else 1.6
+        expected_latency = positive(
+            values.get("expected_latency_seconds", default_latency),
+            "triggers.psychoacoustic.expected_latency_seconds",
+        )
+        required = window / 2 + block_time + hop + expected_latency
+        if max_age < required:
             raise ValueError(
-                f"{metric} requiere al menos {min_age:.1f} s de margen "
-                f"(audio/video >= {pre + min_age + block_time:.1f} s con pre={pre}); "
+                f"{metric} requiere {required:.1f} s de margen "
+                f"(audio/video >= {pre + required + block_time:.1f} s con pre={pre}, "
+                f"hop={hop}, latencia esperada={expected_latency}); "
                 f"configuración actual: {max_age:.1f} s"
             )
         return cls(metric, threshold, factor, calibration_id, window, hop, max_age)
@@ -230,7 +234,6 @@ class PerceptualTrigger:
             try:
                 self._spawn_worker()
                 self.restarts += 1
-                self.last_error = None
                 logger.warning("Scorer psicoacústico reiniciado (intento %d)", self.restarts)
                 return self._connection
             except Exception as exc:
@@ -256,22 +259,31 @@ class PerceptualTrigger:
                 continue
             samples = np.concatenate([block for _, block, _ in window])[-self.window_samples:]
             self._in_flight_deadline = timestamp + self.settings.result_age_limit
+            timed_out = False
             try:
                 conn.send(samples)
                 while not self._stop.is_set() and not conn.poll(.2):
-                    pass
+                    if (
+                        self._in_flight_deadline is not None
+                        and time.time() >= self._in_flight_deadline
+                    ):
+                        timed_out = True
+                        break
                 if self._stop.is_set():
                     return
+                if timed_out:
+                    raise TimeoutError("el scorer no respondió antes del deadline")
                 score, error = conn.recv()
-            except (EOFError, OSError) as exc:
+            except (EOFError, OSError, TimeoutError) as exc:
                 self.last_error = str(exc)
-                logger.error("Se detuvo el proceso de disparo psicoacústico: %s", exc)
+                logger.error("Se detuvo el scorer psicoacústico: %s", exc)
                 self.dropped += 1
                 self._kill_worker()
                 conn = None
                 continue
             finally:
                 self._in_flight_deadline = None
+            self.last_error = None
             self.last_latency_ms = round((time.time() - window[-1][0]) * 1000)
             if error or score is None:
                 self.invalid += 1

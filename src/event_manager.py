@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from uuid import uuid4
 
 import cv2
@@ -173,7 +173,14 @@ class EventManager:
         self.discarded_stale = 0
         self.perceptual_queue_full = 0
         self._last_event_ts = 0.0
-        self._perceptual_queue: Queue = Queue(maxsize=16)
+        psycho = (self.config.get("triggers") or {}).get("psychoacoustic") or {}
+        try:
+            qsize = int(psycho.get("queue_size") or 8)
+        except (TypeError, ValueError):
+            qsize = 8
+        self._perceptual_queue: Queue = Queue(maxsize=max(1, min(64, qsize)))
+        if audio_monitor is not None:
+            audio_monitor.event_manager = self
 
         self.db_path = str(resolve_path(self.config, "database", self.base_dir))
         self.clips_dir = resolve_path(self.config, "clips", self.base_dir)
@@ -643,6 +650,13 @@ class EventManager:
         )
         self._t_perceptual.start()
         self._trigger_loop()  # run trigger loop in current thread
+
+    def status(self):
+        return {
+            "discarded_stale": self.discarded_stale,
+            "perceptual_queue_full": self.perceptual_queue_full,
+            "perceptual_queue_size": self._perceptual_queue.qsize(),
+        }
 
     def stop(self):
         self._running = False

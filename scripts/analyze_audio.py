@@ -140,7 +140,11 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
                     job = start_attempt(conn, table, event, profile, args.profile)
                     try:
                         if table == UNIFIED:
-                            origin = event["peak_ts"] if event["peak_ts"] is not None else event["end_ts"]
+                            origin = (
+                                event["peak_ts"]
+                                if "peak_ts" in event.keys() and event["peak_ts"] is not None
+                                else event["end_ts"]
+                            )
                         else:
                             origin = parse_local_time(event["timestamp"]).timestamp()
                         event_to_analysis_ms = max(0, round((time() - origin) * 1000))
