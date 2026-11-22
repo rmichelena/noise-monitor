@@ -63,6 +63,28 @@ class VideoMonitor:
         self.detection_threshold = float(video_cfg["detection_threshold"])
         roi = video_cfg.get("detection_roi")
         self.detection_roi = tuple(int(v) for v in roi) if roi else None
+        # Zona válida para track/vista. El recorte de inferencia necesita
+        # contexto (un strip de 1280x180 deforma el auto y el modelo pierde
+        # detecciones); se filtra después por el centro de la caja.
+        valid = video_cfg.get("detection_filter")
+        self.detection_filter = tuple(int(v) for v in valid) if valid else None
+        # Geometría plausible de un vehículo a 720p. El SSD devuelve cajas
+        # gigantes (800x125, score 0.13) cuando no encuentra nada; sin este
+        # límite el tracker y la vista en vivo las aceptan como autos.
+        self.box_min_width = float(video_cfg.get("detection_min_width", 24))
+        self.box_max_width = float(video_cfg.get("detection_max_width", 600))
+        self.box_min_height = float(video_cfg.get("detection_min_height", 14))
+        self.box_max_height = float(video_cfg.get("detection_max_height", 300))
+        self.box_min_aspect = float(video_cfg.get("detection_min_aspect", 0.5))
+        self.box_max_aspect = float(video_cfg.get("detection_max_aspect", 6.0))
+        # La vista en vivo dibuja solo lo que importa para el monitoreo; el
+        # modelo etiqueta plantas, sillas y mesas con 0.13 y llenaba el stream
+        # de cajas fuera del tráfico. El resto de detecciones sigue disponible
+        # para el tracker y la atribución de ruido.
+        overlay_classes = video_cfg.get("overlay_classes")
+        self.overlay_classes = (
+            set(overlay_classes) if overlay_classes else set(VEHICLE_CLASSES)
+        )
 
         self.video_seconds = int(buffer_cfg["video_seconds"])
         # La cámara entrega más fps de los configurados (medido: ~60 con
@@ -160,6 +182,8 @@ class VideoMonitor:
         img = frame.copy()
         h, w = img.shape[:2]
         for det in detections:
+            if det["class"] not in self.overlay_classes:
+                continue
             ymin, xmin, ymax, xmax = det["bbox"]
             x1, y1 = int(xmin * w), int(ymin * h)
             x2, y2 = int(xmax * w), int(ymax * h)
@@ -245,6 +269,22 @@ class VideoMonitor:
             self._tpu_retry_at = 0.0
             logger.info("VideoMonitor: Edge TPU recuperado; detección visual activa")
 
+    def _in_detection_filter(self, cx: float, cy: float) -> bool:
+        """True si el centro cae en la zona válida de calzada (o no hay filtro)."""
+        if self.detection_filter is None:
+            return True
+        x1, y1, x2, y2 = self.detection_filter
+        return x1 <= cx <= x2 and y1 <= cy <= y2
+
+    def _vehicle_box_ok(self, width: float, height: float) -> bool:
+        """Descarta cajas de vehículo con tamaño/aspecto imposibles."""
+        if not (self.box_min_width <= width <= self.box_max_width):
+            return False
+        if not (self.box_min_height <= height <= self.box_max_height):
+            return False
+        aspect = width / height if height > 0 else 0.0
+        return self.box_min_aspect <= aspect <= self.box_max_aspect
+
     def _run_inference(self, frame: np.ndarray) -> list[dict]:
         """Ejecuta inferencia y retorna lista de detecciones sobre umbral."""
         if self._interpreter is None:
@@ -290,6 +330,12 @@ class VideoMonitor:
             ymax_f = (y1 + ymax * crop_h) / frame_h
             cx = (xmin_f + xmax_f) / 2.0 * frame_w
             cy = (ymin_f + ymax_f) / 2.0 * frame_h
+            if not self._in_detection_filter(cx, cy):
+                continue
+            bw = (xmax_f - xmin_f) * frame_w
+            bh = (ymax_f - ymin_f) * frame_h
+            if class_name in VEHICLE_CLASSES and not self._vehicle_box_ok(bw, bh):
+                continue
             lane = "left" if cx < frame_w / 2 else "right"
 
             detections.append(
