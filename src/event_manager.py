@@ -25,6 +25,7 @@ import numpy as np
 from scipy.io import wavfile
 
 from .utils import SPEECH_CLASSES, init_database, load_config, resolve_path
+from .vehicle_tracker import VEHICLE_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,12 @@ class EventManager:
         # Espaciado mínimo entre eventos: evita guardar un clip por segundo
         # cuando hay tráfico continuo (cada clip cuesta CPU y disco).
         self.cooldown_seconds = float(self.config["triggers"].get("cooldown_seconds", 0))
+        raw_classes = (self.config.get("tracker") or {}).get("record_classes")
+        self.record_classes = (
+            {str(c).lower() for c in raw_classes}
+            if raw_classes is not None
+            else set(VEHICLE_CLASSES)
+        )
         self.discarded_stale = 0
         self.discarded_cooldown = 0
         self.perceptual_queue_full = 0
@@ -360,6 +367,8 @@ class EventManager:
 
     def _process_passage(self, passage: dict):
         """Insert a completed vehicle passage into DB."""
+        if passage.get("vehicle_class") not in self.record_classes:
+            return
         ts_enter = datetime.fromtimestamp(passage["timestamp_enter"]).strftime(
             "%Y-%m-%dT%H:%M:%S"
         )

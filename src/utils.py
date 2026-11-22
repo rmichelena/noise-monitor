@@ -229,6 +229,11 @@ def validate_config(
     _check_number("video", "framerate", video["framerate"], 1, 240)
     _check_number("video", "inference_interval", video["inference_interval"], 1, None)
     _check_number("video", "detection_threshold", video["detection_threshold"], 0, 1)
+    detector = str(video.get("detector", "ssd")).lower()
+    if detector not in ("ssd", "yolo"):
+        raise ConfigError(f"'video.detector' debe ser ssd|yolo (recibido: {detector!r})")
+    if detector == "yolo" and not str(video.get("yolo_model_path") or "").strip():
+        raise ConfigError("'video.yolo_model_path' es obligatorio con video.detector=yolo")
 
     source = str(audio.get("source", "device"))
     if source not in ("device", "file"):
@@ -256,6 +261,13 @@ def validate_config(
     if tracker is not None:
         if not isinstance(tracker, dict):
             raise ConfigError("'tracker' debe ser una sección")
+        classes = tracker.get("record_classes")
+        if classes is not None:
+            if not isinstance(classes, list) or any(not isinstance(c, str) for c in classes):
+                raise ConfigError("'tracker.record_classes' debe ser una lista de clases")
+            unknown = sorted(set(classes) - {"car", "truck", "bus", "motorcycle", "bicycle"})
+            if unknown:
+                raise ConfigError(f"'tracker.record_classes': clases desconocidas {unknown}")
         for key, lo in (
             ("max_distance", 1), ("max_disappeared", 0), ("min_track_seconds", 0),
             ("min_displacement", 0), ("max_track_seconds", 0),

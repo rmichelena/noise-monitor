@@ -217,6 +217,24 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   del dashboard). Incluye una
   vista en vivo MJPEG (`/stream`) con las detecciones dibujadas, que solo se
   codifica mientras la transmisión está activada.
+- Ajustes (`/settings`) protegidos con HTTP Basic. Permiten editar umbrales,
+  criterio dB(A)/psicoacústico, calibración, detector SSD/YOLO, resolución,
+  ROI/filtro sobre un frame de la cámara, puntos de velocidad, clases de
+  vehículo que generan pasaje, tracker y retención. Se guarda en
+  `config.yaml` conservando comentarios y dejando `config.yaml.bak`; los
+  cambios se aplican **al reiniciar** `noise-monitor`. Configurá las
+  credenciales en el servicio:
+
+  ```bash
+  sudo systemctl edit noise-monitor
+  # [Service]
+  # Environment=NOISE_SETTINGS_USER=admin
+  # Environment=NOISE_SETTINGS_PASSWORD=una-clave-larga
+  sudo systemctl restart noise-monitor
+  ```
+
+  Sin `NOISE_SETTINGS_PASSWORD`, `/settings` responde 503 (falla cerrado).
+  El dashboard público sigue sin autenticación; solo los ajustes la exigen.
 - Retención: `scripts/purge.py` borra clips de más de 30 días (la fila del
   evento y la del pasaje se conservan sin clip) y `audio_levels` de más de 400
   días. Los clips **fijados** (`pinned`) no se borran nunca.

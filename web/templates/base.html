@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Noise Monitor{% endblock %}</title>
 <style>
-  :root { --bg:#101418; --panel:#171d24; --line:#26303a; --fg:#e6edf3;
+  :root { color-scheme: dark; --bg:#101418; --panel:#171d24; --line:#26303a; --fg:#e6edf3;
           --dim:#8b98a5; --accent:#4cc2ff; --warn:#ffb020; --bad:#ff5c5c; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
@@ -69,6 +69,7 @@
 <header>
   <h1>Noise Monitor</h1>
   <span class="dim">balcón · Lima</span>
+  <a class="a" href="/settings" style="font-size:13px">⚙ Ajustes</a>
   <span class="dim" style="margin-left:auto">{% block updated %}{{ now }}{% endblock %}</span>
 </header>
 <main>

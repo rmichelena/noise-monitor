@@ -82,6 +82,7 @@ web:
 
 # Centroid tracker para registro continuo de vehículos
 tracker:
+  record_classes: [car, truck, bus, motorcycle, bicycle]  # clases que generan pasaje/clip
   max_distance: 120
   max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
   min_track_seconds: 0.3

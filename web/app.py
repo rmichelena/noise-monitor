@@ -21,18 +21,22 @@ import csv
 import io
 import logging
 import math
+import os
+import secrets
 import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from src.utils import resolve_path
+from src.utils import ConfigError, resolve_path
 
 from .analysis import analysis_router
+from .settings import apply_updates, public_payload, read_config, save_config
 
 PAGE_SIZE = 20
 # Misma escala que el overlay de los clips.
@@ -76,6 +80,29 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     app = FastAPI(title="Noise Monitor", version="1.0", docs_url="/api/docs")
 
     app.include_router(analysis_router(db_path, templates))
+
+    settings_security = HTTPBasic(auto_error=False)
+
+    def require_settings(
+        credentials: HTTPBasicCredentials | None = Depends(settings_security),
+    ) -> None:
+        """Basic auth solo para /settings; falla cerrado si no hay password."""
+        password = os.environ.get("NOISE_SETTINGS_PASSWORD", "")
+        if not password:
+            raise HTTPException(
+                status_code=503,
+                detail="Ajustes deshabilitados: define NOISE_SETTINGS_PASSWORD",
+            )
+        user = os.environ.get("NOISE_SETTINGS_USER", "admin")
+        valid = bool(credentials) and secrets.compare_digest(
+            credentials.username.encode(), user.encode()
+        ) and secrets.compare_digest(credentials.password.encode(), password.encode())
+        if not valid:
+            raise HTTPException(
+                status_code=401,
+                detail="Autenticación requerida",
+                headers={"WWW-Authenticate": 'Basic realm="Noise Monitor settings"'},
+            )
 
     @app.middleware("http")
     async def no_cache(request, call_next):
@@ -806,6 +833,66 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "frame_count": getattr(video_monitor, "_frame_count", None),
             "vehicles": list(getattr(video_monitor, "vehicle_log", [])),
         }
+
+    settings_path = base_dir / "config.yaml"
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(
+        request: Request,
+        _: None = Depends(require_settings),
+    ):
+        try:
+            payload = public_payload(read_config(settings_path))
+        except Exception as exc:
+            logger.exception("No se pudo leer config.yaml")
+            raise HTTPException(status_code=500, detail=f"config.yaml: {exc}") from exc
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {"payload": payload},
+        )
+
+    @app.get("/api/settings")
+    def settings_read(_: None = Depends(require_settings)):
+        try:
+            return public_payload(read_config(settings_path))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"config.yaml: {exc}") from exc
+
+    @app.post("/api/settings")
+    async def settings_write(
+        request: Request,
+        _: None = Depends(require_settings),
+    ):
+        try:
+            updates = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="JSON inválido") from exc
+        try:
+            config = read_config(settings_path)
+            config, changed = apply_updates(config, updates, base_dir)
+            save_config(settings_path, config)
+        except (ValueError, ConfigError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("No se pudo guardar config.yaml")
+            raise HTTPException(status_code=500, detail=f"config.yaml: {exc}") from exc
+        return {
+            "saved": True,
+            "changed": changed,
+            "restart_required": bool(changed),
+            "backup": str(settings_path.with_name(settings_path.name + ".bak")),
+        }
+
+    @app.get("/api/settings/snapshot")
+    def settings_snapshot(_: None = Depends(require_settings)):
+        if video_monitor is None:
+            raise HTTPException(status_code=404, detail="Video no disponible")
+        getter = getattr(video_monitor, "latest_frame_jpeg", None)
+        jpeg = getter() if getter else None
+        if not jpeg:
+            raise HTTPException(status_code=404, detail="Aún no hay frames")
+        return Response(content=jpeg, media_type="image/jpeg")
 
     @app.get("/api/health")
     def api_health():
