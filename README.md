@@ -88,6 +88,32 @@ cp config.example.yaml config.yaml   # hardware real
 velocidad). Los umbrales por defecto del ejemplo (85 dB pico / 70 dB sostenido)
 son un punto de partida, no una calibración.
 
+## Modelo de detección de video
+
+El detector es configuración (`video.detector`), no código:
+
+- `ssd` (por defecto): SSD MobileNet V2 COCO 300×300, el histórico. El crop
+  de calzada se estira a 300×300.
+- `yolo`: YOLO11n INT8 exportado a Edge TPU con entrada **160×640** (4:1),
+  sin deformación ni tiles. Requiere `models/yolo11n_160x640_edgetpu.tflite`
+  (`video.yolo_model_path`). En runtime solo usa `ai-edge-litert`; no necesita
+  Ultralytics ni TensorFlow.
+
+El `.tflite` no se versiona. Se exporta en un entorno aparte:
+
+```bash
+python -m venv /tmp/yoloenv
+/tmp/yoloenv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+/tmp/yoloenv/bin/pip install ultralytics
+/tmp/yoloenv/bin/python -c "from ultralytics import YOLO; \
+  YOLO('yolo11n.pt').export(format='edgetpu', imgsz=(160, 640), quantize=8, data='coco8.yaml')"
+cp yolo11n_saved_model/yolo11n_full_integer_quant_edgetpu.tflite \
+   models/yolo11n_160x640_edgetpu.tflite
+```
+
+Los pesos YOLO11 son **AGPL-3.0** (el proyecto es MIT): decisión consciente
+del operador al activar `video.detector: yolo`.
+
 Modelo de clasificación de audio:
 
 ```bash
