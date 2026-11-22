@@ -67,6 +67,44 @@ class VideoMonitor:
         self.framerate = int(video_cfg["framerate"])
         self.inference_interval = int(video_cfg["inference_interval"])
         self.detection_threshold = float(video_cfg["detection_threshold"])
+        roi = video_cfg.get("detection_roi")
+        self.detection_roi = tuple(int(v) for v in roi) if roi else None
+        # Zona válida para track/vista. El recorte de inferencia necesita
+        # contexto (un strip de 1280x180 deforma el auto y el modelo pierde
+        # detecciones); se filtra después por el centro de la caja.
+        valid = video_cfg.get("detection_filter")
+        self.detection_filter = tuple(int(v) for v in valid) if valid else None
+        # Geometría plausible de un vehículo a 720p. El SSD devuelve cajas
+        # gigantes (800x125, score 0.13) cuando no encuentra nada; sin este
+        # límite el tracker y la vista en vivo las aceptan como autos.
+        self.box_min_width = float(video_cfg.get("detection_min_width", 24))
+        self.box_max_width = float(video_cfg.get("detection_max_width", 600))
+        self.box_min_height = float(video_cfg.get("detection_min_height", 14))
+        self.box_max_height = float(video_cfg.get("detection_max_height", 300))
+        self.box_min_aspect = float(video_cfg.get("detection_min_aspect", 0.5))
+        self.box_max_aspect = float(video_cfg.get("detection_max_aspect", 6.0))
+        # La vista en vivo dibuja solo lo que importa para el monitoreo; el
+        # modelo etiqueta plantas, sillas y mesas con 0.13 y llenaba el stream
+        # de cajas fuera del tráfico. El resto de detecciones sigue disponible
+        # para el tracker y la atribución de ruido.
+        overlay_classes = video_cfg.get("overlay_classes")
+        self.overlay_classes = (
+            set(overlay_classes) if overlay_classes else set(VEHICLE_CLASSES)
+        )
+
+        # Selector de detector: "ssd" (histórico, 300x300) o "yolo" (160x640,
+        # sin deformación). El modelo es configuración, no código.
+        self.detector_kind = str(video_cfg.get("detector", "ssd")).lower()
+        self._yolo = None
+        self._yolo_errors = 0
+        if self.detector_kind == "yolo":
+            from .yolo_detector import YOLODetector
+
+            self._yolo = YOLODetector(self.config, self.base_dir)
+        elif self.detector_kind != "ssd":
+            raise ValueError(
+                f"video.detector desconocido: {self.detector_kind!r} (ssd|yolo)"
+            )
 
         self.video_seconds = int(buffer_cfg["video_seconds"])
         # La cámara entrega más fps de los configurados (medido: ~60 con
@@ -107,6 +145,8 @@ class VideoMonitor:
         self._running = False
         self._cap: cv2.VideoCapture | None = None
         self._frame_count = 0
+        self.inference_count = 0
+        self.vehicle_log: deque = deque(maxlen=800)
 
         # Modo simulado: loop cuando el video termina
         debug_cfg = self.config.get("debug", {})
@@ -172,6 +212,8 @@ class VideoMonitor:
         img = frame.copy()
         h, w = img.shape[:2]
         for det in detections:
+            if det["class"] not in self.overlay_classes:
+                continue
             ymin, xmin, ymax, xmax = det["bbox"]
             x1, y1 = int(xmin * w), int(ymin * h)
             x2, y2 = int(xmax * w), int(ymax * h)
@@ -212,6 +254,11 @@ class VideoMonitor:
         evidencia principal y no dependen del Coral. `_ensure_interpreter`
         reintenta cada minuto, así que un replug se recupera en caliente.
         """
+        if self.detector_kind == "yolo":
+            ok = self._yolo.init_interpreter()
+            self._interpreter = self._yolo.interpreter
+            return ok
+
         if Interpreter is None or load_delegate is None:
             logger.error(
                 "VideoMonitor: falta el runtime ai-edge-litert. Detección "
@@ -265,13 +312,73 @@ class VideoMonitor:
             self._tpu_retry_at = 0.0
             logger.info("VideoMonitor: Edge TPU recuperado; detección visual activa")
 
+    def _in_detection_filter(self, cx: float, cy: float) -> bool:
+        """True si el centro cae en la zona válida de calzada (o no hay filtro)."""
+        if self.detection_filter is None:
+            return True
+        x1, y1, x2, y2 = self.detection_filter
+        return x1 <= cx <= x2 and y1 <= cy <= y2
+
+    def _vehicle_box_ok(self, width: float, height: float) -> bool:
+        """Descarta cajas de vehículo con tamaño/aspecto imposibles."""
+        if not (self.box_min_width <= width <= self.box_max_width):
+            return False
+        if not (self.box_min_height <= height <= self.box_max_height):
+            return False
+        aspect = width / height if height > 0 else 0.0
+        return self.box_min_aspect <= aspect <= self.box_max_aspect
+
+    def _detection_ok(self, det: dict, frame_w: int, frame_h: int) -> bool:
+        """Filtro común de calzada/geometría para detectores externos."""
+        if not self._in_detection_filter(det["cx"], det["cy"]):
+            return False
+        if det["class"] in VEHICLE_CLASSES:
+            ymin, xmin, ymax, xmax = det["bbox"]
+            if not self._vehicle_box_ok(
+                (xmax - xmin) * frame_w, (ymax - ymin) * frame_h
+            ):
+                return False
+        return True
+
     def _run_inference(self, frame: np.ndarray) -> list[dict]:
         """Ejecuta inferencia y retorna lista de detecciones sobre umbral."""
         if self._interpreter is None:
             return []
+        if self.detector_kind == "yolo":
+            frame_h, frame_w = frame.shape[:2]
+            try:
+                dets = self._yolo.detect(frame, self.detection_roi)
+            except Exception:
+                self._yolo_errors += 1
+                if self._yolo_errors == 1 or self._yolo_errors % 500 == 0:
+                    logger.exception(
+                        "YOLODetector falló en un frame (%d errores); "
+                        "se descarta y el video sigue",
+                        self._yolo_errors,
+                    )
+                if self._yolo_errors >= 3:
+                    logger.error(
+                        "YOLODetector: 3 fallos consecutivos; invalidando "
+                        "intérprete para que se reintente el TPU"
+                    )
+                    self._interpreter = None
+                    self._yolo.interpreter = None
+                    self._tpu_retry_at = 0.0
+                    self._yolo_errors = 0
+                return []
+            self._yolo_errors = 0
+            return [d for d in dets if self._detection_ok(d, frame_w, frame_h)]
 
         h, w = self._input_shape
-        resized = cv2.resize(frame, (w, h))
+        frame_h, frame_w = frame.shape[:2]
+        if self.detection_roi:
+            x1, y1, x2, y2 = self.detection_roi
+            source = frame[y1:y2, x1:x2]
+        else:
+            x1 = y1 = 0
+            x2, y2 = frame_w, frame_h
+            source = frame
+        resized = cv2.resize(source, (w, h))
         input_data = np.expand_dims(resized, axis=0).astype(np.uint8)
 
         self._interpreter.set_tensor(self._input_index, input_data)
@@ -283,7 +390,8 @@ class VideoMonitor:
         count = int(self._interpreter.get_tensor(self._output_indices[3])[0])
 
         detections = []
-        frame_h, frame_w = frame.shape[:2]
+        crop_w = max(1, x2 - x1)
+        crop_h = max(1, y2 - y1)
 
         for i in range(min(count, len(scores))):
             if scores[i] < self.detection_threshold:
@@ -292,17 +400,28 @@ class VideoMonitor:
             class_id = int(classes[i])
             class_name = self.labels.get(class_id, f"id:{class_id}")
 
-            # bbox: [ymin, xmin, ymax, xmax] normalizado 0-1
+            # bbox: [ymin, xmin, ymax, xmax] normalizado 0-1 respecto al
+            # recorte de detección; se devuelve en coordenadas del frame.
             ymin, xmin, ymax, xmax = boxes[i]
-            cx = (xmin + xmax) / 2.0 * frame_w
-            cy = (ymin + ymax) / 2.0 * frame_h
+            xmin_f = (x1 + xmin * crop_w) / frame_w
+            xmax_f = (x1 + xmax * crop_w) / frame_w
+            ymin_f = (y1 + ymin * crop_h) / frame_h
+            ymax_f = (y1 + ymax * crop_h) / frame_h
+            cx = (xmin_f + xmax_f) / 2.0 * frame_w
+            cy = (ymin_f + ymax_f) / 2.0 * frame_h
+            if not self._in_detection_filter(cx, cy):
+                continue
+            bw = (xmax_f - xmin_f) * frame_w
+            bh = (ymax_f - ymin_f) * frame_h
+            if class_name in VEHICLE_CLASSES and not self._vehicle_box_ok(bw, bh):
+                continue
             lane = "left" if cx < frame_w / 2 else "right"
 
             detections.append(
                 {
                     "class": class_name,
                     "score": float(scores[i]),
-                    "bbox": boxes[i].tolist(),
+                    "bbox": [ymin_f, xmin_f, ymax_f, xmax_f],
                     "cx": float(cx),
                     "cy": float(cy),
                     "lane": lane,
@@ -404,6 +523,13 @@ class VideoMonitor:
         if self._frame_count % self.inference_interval == 0:
             self._ensure_interpreter()
             detections = self._run_inference(frame)
+            self.inference_count += 1
+            for det in detections:
+                if det["class"] in VEHICLE_CLASSES:
+                    self.vehicle_log.append(
+                        (round(timestamp, 2), det["class"], round(det["score"], 2),
+                         round(det["cx"], 1), round(det["cy"], 1))
+                    )
             with self._lock:
                 self._recent_detections = detections
             self._det_history.append((timestamp, detections))

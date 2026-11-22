@@ -22,12 +22,28 @@ triggers:
 # Parámetros de video (cámara USB ELP vía OpenCV)
 video:
   source: 0                   # Índice del dispositivo USB (o "/dev/video0")
-  resolution: [1920, 1080]
+  resolution: [1280, 720]   # 720p: menos CPU, RAM y ancho de banda
   framerate: 30
   inference_interval: 2       # Procesar 1 de cada N frames
   overlay_db: true         # quemar fecha/hora y dB en los clips
   overlay_every_frames: 5  # refrescar el dB cada N frames
-  detection_threshold: 0.5    # Confianza mínima del modelo
+  detection_threshold: 0.12   # recall; con 0.35 se perdían autos oscuros
+  detection_roi: [0, 150, 1280, 460]   # recorte de inferencia: contexto sin el balcón
+  detection_filter: [0, 220, 1280, 400]  # zona válida (calzada): descarta balcón, árboles y vereda
+  detection_min_width: 24      # px a 720p; cajas más chicas son ruido
+  detection_max_width: 600     # px (bus largo); el SSD inventa cajas de 800 px
+  detection_min_height: 14
+  detection_max_height: 300
+  detection_min_aspect: 0.5
+  detection_max_aspect: 6.0
+  overlay_classes: [car, truck, bus, motorcycle, bicycle]  # cajas en la vista en vivo
+  # Detector: "ssd" (histórico 300x300) o "yolo" (160x640, sin deformación).
+  detector: ssd
+  yolo_model_path: models/yolo11n_160x640_edgetpu.tflite
+  yolo_threshold: 0.25       # umbral propio de YOLO (el 0.12 es del SSD)
+  yolo_nms_iou: 0.45
+  yolo_max_det: 100          # cajas finales por frame
+  yolo_max_candidates: 300   # top-K antes de NMS
 
 # Buffer circular
 buffer:
@@ -60,7 +76,7 @@ tracker:
   max_distance: 120
   max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
   min_track_seconds: 0.3
-  min_displacement: 400
+  min_displacement: 267
   max_track_seconds: 15
 
 # Clasificador de audio (YAMNet)

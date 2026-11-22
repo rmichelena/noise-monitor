@@ -97,6 +97,37 @@ corto que la ventana del clip, `speed.enabled` sin `reference_left_x` /
 `reference_right_x`) salen por el log sin impedir el arranque. Ambos ejemplos
 versionados son configuraciones completas y válidas.
 
+## Modelo de detección de video
+
+El detector es configuración (`video.detector`), no código:
+
+- `ssd` (por defecto): SSD MobileNet V2 COCO 300×300, el histórico. El crop
+  de calzada se estira a 300×300.
+- `yolo`: YOLO11n INT8 exportado a Edge TPU con entrada **160×640** (4:1),
+  sin deformación ni tiles. Requiere `models/yolo11n_160x640_edgetpu.tflite`
+  (`video.yolo_model_path`). En runtime solo usa `ai-edge-litert`; no necesita
+  Ultralytics ni TensorFlow.
+
+El `.tflite` no se versiona. Se exporta en un entorno aparte:
+
+```bash
+python -m venv /tmp/yoloenv
+/tmp/yoloenv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+/tmp/yoloenv/bin/pip install ultralytics
+/tmp/yoloenv/bin/python -c "from ultralytics import YOLO; \
+  YOLO('yolo11n.pt').export(format='edgetpu', imgsz=(160, 640), int8=True, data='coco8.yaml')"
+cp yolo11n_saved_model/yolo11n_full_integer_quant_edgetpu.tflite \
+   models/yolo11n_160x640_edgetpu.tflite
+```
+
+Los pesos YOLO11 son **AGPL-3.0** (el proyecto es MIT): decisión consciente
+del operador al activar `video.detector: yolo`.
+
+Para producción, calibrar la cuantización INT8 con frames reales de esta
+cámara (día y noche) en vez de `coco8`: la salida esperada del `.tflite` es
+`[1, 84, N]` (4 cajas + 80 clases); el detector valida esa forma y el labelmap
+COCO-80 al arrancar.
+
 Modelo de clasificación de audio:
 
 ```bash
@@ -197,6 +228,10 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   tiene garantía de uptime; para una URL fija hace falta un túnel nombrado
   con un dominio en Cloudflare (`cloudflared tunnel login`/`create`).
   Consultar la URL actual: `journalctl -u noise-tunnel | grep trycloudflare`.
+- Red: `noise-net-watchdog.timer` comprueba cada 60 s gateway e internet;
+  tras 3 fallos reconecta Wi-Fi (networkd + suplicante netplan) y lo deja en
+  el journal (`journalctl -t noise-net-watchdog`). DNS de respaldo
+  `1.1.1.1`/`8.8.8.8` configurado por drop-in de systemd-networkd.
 - Logs: `journalctl -u noise-monitor -f`.
 
 ## Privacidad y uso responsable

@@ -1,0 +1,8 @@
+[Unit]
+Description=Noise Monitor - watchdog de conectividad de red
+After=systemd-networkd.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/roberto/noise-monitor/scripts/net_watchdog.sh
