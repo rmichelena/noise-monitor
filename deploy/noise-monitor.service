@@ -14,6 +14,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPYCACHEPREFIX=/home/roberto/noise-monitor/__pycache__
 Nice=5
 Restart=always
+RestartPreventExitStatus=78
 RestartSec=10
 # El dispositivo Coral y la cámara pueden tardar en enumerar tras un reinicio.
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/video0 ] && exit 0; sleep 2; done; exit 0'

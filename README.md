@@ -13,7 +13,9 @@ fuente y hora— en lugar de percepciones subjetivas.
 
 Implementado en `src/`:
 
-- Captura continua de audio con ponderación A (IEC 61672-1) y cálculo de dB SPL.
+- Captura continua de audio con ponderación A (IEC 61672-1, 0 dB a 1 kHz) y
+  cálculo de dB SPL; la sensibilidad del micrófono se ajusta con
+  `audio.calibration_offset`.
 - Captura de video e inferencia de objetos sobre Coral Edge TPU (`ai-edge-litert`).
 - `CentroidTracker` para registro continuo de pasajes, con filtros de duración
   mínima y desplazamiento mínimo (descarta parpadeos del modelo y vehículos
@@ -88,6 +90,13 @@ cp config.example.yaml config.yaml   # hardware real
 velocidad). Los umbrales por defecto del ejemplo (85 dB pico / 70 dB sostenido)
 son un punto de partida, no una calibración.
 
+Al arrancar, `main.py` valida la config (`src.utils.validate_config`): una
+clave ausente o un valor imposible detiene el proceso con un mensaje que nombra
+`sección.clave`, en vez de morir dentro de un thread. Los avisos (buffer más
+corto que la ventana del clip, `speed.enabled` sin `reference_left_x` /
+`reference_right_x`) salen por el log sin impedir el arranque. Ambos ejemplos
+versionados son configuraciones completas y válidas.
+
 ## Modelo de detección de video
 
 El detector es configuración (`video.detector`), no código:
@@ -141,6 +150,18 @@ Estadísticas rápidas de la base:
 python scripts/stats.py --days 7
 ```
 
+## Tests
+
+```bash
+python -m pytest            # config en pyproject.toml (testpaths + pythonpath)
+python -m unittest discover -s tests   # equivalente, sin pytest
+```
+
+Los tests no necesitan cámara, micrófono, Coral ni `config.yaml`: parten de
+`config.example.yaml`, escriben en un directorio temporal y solo requieren
+`ffmpeg` para los dos casos que generan clips (si falta, se saltan). Los de
+`AudioMonitor` se saltan el dispositivo de audio real.
+
 ## Scripts
 
 | Script | Uso |
@@ -190,12 +211,15 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   en solo-lectura y muestra dB instantáneo, pico por minuto de las últimas 2 h,
   contadores del día, sliders de nivel y velocidad, marcas ★ de eventos y
   pasajes fijados (desde el modal del clip) y listas de eventos y pasajes
-  con filtros. Incluye una
+  con filtros. Exportación CSV de la evidencia para un periodo
+  (`/api/export/events.csv` y `/api/export/passages.csv`, parámetros
+  `days`, `min_db`, `vehicle`, `direction`, `category`: los mismos filtros
+  del dashboard). Incluye una
   vista en vivo MJPEG (`/stream`) con las detecciones dibujadas, que solo se
   codifica mientras la transmisión está activada.
 - Retención: `scripts/purge.py` borra clips de más de 30 días (la fila del
-  evento se conserva sin clip) y `audio_levels` de más de 400 días. Los clips
-  de eventos **fijados** (`pinned`) no se borran nunca.
+  evento y la del pasaje se conservan sin clip) y `audio_levels` de más de 400
+  días. Los clips **fijados** (`pinned`) no se borran nunca.
   `noise-purge.timer` lo ejecuta los domingos a las 04:00. Configurable en
   `config.yaml` → `retention`.
 - Acceso externo: `noise-tunnel.service` levanta un *quick tunnel* de

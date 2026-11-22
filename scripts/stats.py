@@ -7,6 +7,7 @@ Uso: python scripts/stats.py [--limit N] [--days D]
 """
 
 import argparse
+import math
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -14,6 +15,32 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
+
+
+def _positive_int(value: str) -> int:
+    """argparse type: `--limit 0` imprimía cabeceras sin filas y `-1` (que
+    SQLite lee como "sin límite") volcaba la tabla entera."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"se esperaba un entero: {value!r}")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"debe ser >= 1 (recibido: {number})")
+    return number
+
+
+def _fmt(value, fmt: str = "{:.1f}", dash: str = "—") -> str:
+    """Formatea opcionales de SQL sin reventar con NULL ni con -inf."""
+    if value is None:
+        return dash
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return dash
+    if not math.isfinite(number):
+        return dash
+    return fmt.format(number)
+
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -61,7 +88,10 @@ def print_passages(conn: sqlite3.Connection, where: str, params: list, limit: in
         params,
     ).fetchone()
     if row["lo"] is not None:
-        print(f"  Mín: {row['lo']:.1f} dB  |  Máx: {row['hi']:.1f} dB  |  Prom: {row['avg']:.1f} dB")
+        print(
+            f"  Mín: {_fmt(row['lo'])} dB  |  Máx: {_fmt(row['hi'])} dB"
+            f"  |  Prom: {_fmt(row['avg'])} dB"
+        )
 
     linked = conn.execute(
         f"SELECT COUNT(*) FROM vehicle_passages {where} "
@@ -79,8 +109,8 @@ def print_passages(conn: sqlite3.Connection, where: str, params: list, limit: in
         noisy = f"→ event #{row['noise_event_id']}" if row["noise_event_id"] else "silencioso"
         print(
             f"  #{row['id']} {row['timestamp']} | {row['vehicle_class']} | "
-            f"{row['lane'] or '-'} | {row['db_at_time']:.1f} dB | "
-            f"score {row['detection_score']:.2f} | {noisy}"
+            f"{row['lane'] or '-'} | {_fmt(row['db_at_time'])} dB | "
+            f"score {_fmt(row['detection_score'], '{:.2f}')} | {noisy}"
         )
 
 
@@ -134,7 +164,10 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
         params,
     ).fetchone()
     if row["lo"] is not None:
-        print(f"  Mín: {row['lo']:.1f} dB  |  Máx: {row['hi']:.1f} dB  |  Prom: {row['avg']:.1f} dB")
+        print(
+            f"  Mín: {_fmt(row['lo'])} dB  |  Máx: {_fmt(row['hi'])} dB"
+            f"  |  Prom: {_fmt(row['avg'])} dB"
+        )
 
     print(f"\n--- Top 5 más ruidosos ---")
     for row in conn.execute(
@@ -143,7 +176,7 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
         params,
     ).fetchall():
         print(
-            f"  #{row['id']} {row['timestamp']} | {row['db_max']:.1f} dB | "
+            f"  #{row['id']} {row['timestamp']} | {_fmt(row['db_max'])} dB | "
             f"{row['sound_category'] or '?'}/{row['sound_class'] or '?'} | veh: {row['vehicle_class'] or '-'}"
         )
 
@@ -157,7 +190,7 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
         clip = "clip" if row["clip_path"] else "—"
         linked = f"→ pass #{row['passage_id']}" if row["passage_id"] else ""
         print(
-            f"  #{row['id']} {row['timestamp']} | {row['db_max']:.1f} dB | "
+            f"  #{row['id']} {row['timestamp']} | {_fmt(row['db_max'])} dB | "
             f"{row['trigger_type']} | {row['sound_category'] or '?'}/{row['sound_class'] or '?'} | "
             f"{row['vehicle_class'] or '-'} | {row['confidence']} | {clip} {linked}"
         )
@@ -181,8 +214,10 @@ def print_legacy(conn: sqlite3.Connection, where: str, params: list, limit: int)
 
 def main():
     parser = argparse.ArgumentParser(description="Estadísticas del pipeline de monitoreo")
-    parser.add_argument("--limit", type=int, default=15, help="Últimos N items a listar")
-    parser.add_argument("--days", type=int, default=None, help="Solo últimos D días")
+    parser.add_argument("--limit", type=_positive_int, default=15,
+                        help="Últimos N items a listar (>= 1)")
+    parser.add_argument("--days", type=_positive_int, default=None,
+                        help="Solo últimos D días (>= 1)")
     parser.add_argument("--db", type=str, default=None, help="Ruta a events.db")
     args = parser.parse_args()
 
