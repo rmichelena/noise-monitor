@@ -90,7 +90,7 @@ def main():
     # Validar aquí y no dentro de los threads: una clave ausente reventaba en
     # AudioMonitor con un KeyError sin nombre y systemd reiniciaba en bucle.
     try:
-        config = validate_config(load_config(base_dir / "config.yaml"))
+        config = validate_config(load_config(base_dir / "config.yaml"), base_dir=base_dir)
     except (FileNotFoundError, ConfigError) as exc:
         logger.error("Config inválida: %s", exc)
         return 1

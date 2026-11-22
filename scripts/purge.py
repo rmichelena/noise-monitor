@@ -86,6 +86,13 @@ def main() -> int:
     ret = config.get("retention", {})
     clip_days = args.clip_days if args.clip_days is not None else int(ret.get("clip_days", DEFAULT_CLIP_DAYS))
     levels_days = args.levels_days if args.levels_days is not None else int(ret.get("levels_days", DEFAULT_LEVELS_DAYS))
+    if clip_days < 1 or levels_days < 1:
+        print(
+            "retención inválida: clip_days/levels_days deben ser >= 1 "
+            f"(recibido: {clip_days}/{levels_days})",
+            file=sys.stderr,
+        )
+        return 2
 
     db_path = resolve_path(config, "database", PROJECT_DIR)
     clips_dir = resolve_path(config, "clips", PROJECT_DIR)

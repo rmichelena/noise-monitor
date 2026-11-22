@@ -191,6 +191,31 @@ class ExportCsvTest(WebTestCase):
         self.assertEqual(rows[0]["speed_kmh"], "48.0")
         self.assertEqual(rows[0]["direction"], "ltr")
 
+    def test_events_csv_direction_filter_and_column(self):
+        conn = sqlite3.connect(str(self.db_path))
+        car = conn.execute("SELECT id FROM vehicle_passages WHERE vehicle_class='car'").fetchone()[0]
+        conn.execute("UPDATE noise_events SET passage_id=? WHERE vehicle_class='truck'", (car,))
+        conn.commit()
+        conn.close()
+        rows = list(csv.DictReader(io.StringIO(
+            self.client.get("/api/export/events.csv?days=1&direction=ltr").text
+        )))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["direction"], "ltr")
+        self.assertIn("direction", rows[0])
+
+    def test_events_csv_truck_without_passage_has_empty_direction(self):
+        rows = list(csv.DictReader(io.StringIO(
+            self.client.get("/api/export/events.csv?days=1&vehicle=truck").text
+        )))
+        self.assertEqual(rows[0]["direction"], "")
+
+    def test_export_returns_500_if_db_is_gone(self):
+        self.db_path.unlink()
+        response = self.client.get("/api/export/events.csv?days=1")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("exportar", response.json()["detail"])
+
     def test_passages_csv_filters(self):
         self.assertEqual(
             len(list(csv.DictReader(io.StringIO(

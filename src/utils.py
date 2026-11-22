@@ -7,6 +7,7 @@ Utilidades base para el sistema de monitoreo de ruido.
 """
 
 import logging
+import math
 import os
 import sqlite3
 from pathlib import Path
@@ -152,13 +153,19 @@ _REQUIRED_KEYS: dict[str, dict[str, tuple[type, ...]]] = {
 def _check_number(section: str, key: str, value, minimum: float | None, maximum: float | None):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{section}.{key} debe ser numérico (recibido: {value!r})")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ConfigError(f"{section}.{key} debe ser finito (recibido: {value!r})")
     if minimum is not None and value < minimum:
         raise ConfigError(f"{section}.{key} debe ser >= {minimum} (recibido: {value})")
     if maximum is not None and value > maximum:
         raise ConfigError(f"{section}.{key} debe ser <= {maximum} (recibido: {value})")
 
 
-def validate_config(config: dict, logger: logging.Logger | None = None) -> dict:
+def validate_config(
+    config: dict,
+    logger: logging.Logger | None = None,
+    base_dir: Path | None = None,
+) -> dict:
     """
     Comprueba que la config tiene lo que el pipeline lee, con rangos sensatos.
 
@@ -217,6 +224,45 @@ def validate_config(config: dict, logger: logging.Logger | None = None) -> dict:
     _check_number("video", "framerate", video["framerate"], 1, 240)
     _check_number("video", "inference_interval", video["inference_interval"], 1, None)
     _check_number("video", "detection_threshold", video["detection_threshold"], 0, 1)
+
+    source = str(audio.get("source", "device"))
+    if source not in ("device", "file"):
+        raise ConfigError(f"'audio.source' debe ser device|file (recibido: {source!r})")
+    if source == "file":
+        file_path = str(audio.get("file_path") or "").strip()
+        if not file_path:
+            raise ConfigError("'audio.file_path' es obligatorio cuando audio.source=file")
+        if base_dir is not None:
+            path = Path(file_path).expanduser()
+            if not path.is_absolute():
+                path = Path(base_dir) / path
+            if not path.is_file():
+                raise ConfigError(f"'audio.file_path' no existe: {path}")
+
+    for key, lo, hi in (
+        ("calibration_offset", -200.0, 200.0),
+    ):
+        if key in audio:
+            _check_number("audio", key, audio[key], lo, hi)
+    if "cooldown_seconds" in triggers:
+        _check_number("triggers", "cooldown_seconds", triggers["cooldown_seconds"], 0, None)
+
+    tracker = config.get("tracker")
+    if tracker is not None:
+        if not isinstance(tracker, dict):
+            raise ConfigError("'tracker' debe ser una sección")
+        for key, lo in (
+            ("max_distance", 1), ("max_disappeared", 0), ("min_track_seconds", 0),
+            ("min_displacement", 0), ("max_track_seconds", 0),
+        ):
+            if key in tracker:
+                _check_number("tracker", key, tracker[key], lo, None)
+
+    speed_cfg = config.get("speed")
+    if speed_cfg is not None and not isinstance(speed_cfg, dict):
+        raise ConfigError("'speed' debe ser una sección")
+    if speed_cfg and not isinstance(speed_cfg.get("enabled", True), bool):
+        raise ConfigError("'speed.enabled' debe ser booleano")
 
     if triggers["sustained_db"] > triggers["peak_db"]:
         log.warning(

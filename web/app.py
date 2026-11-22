@@ -53,8 +53,9 @@ logger = logging.getLogger(__name__)
 
 EVENTS_CSV_COLUMNS = [
     "id", "timestamp", "db_max", "db_avg", "trigger_type", "sound_class",
-    "sound_category", "sound_confidence", "vehicle_class", "lane", "confidence",
-    "passage_id", "duration_ms", "audio_muted", "pinned", "clip_path",
+    "sound_category", "sound_confidence", "vehicle_class", "lane", "direction",
+    "confidence", "passage_id", "duration_ms", "audio_muted", "pinned",
+    "clip_path",
 ]
 PASSAGES_CSV_COLUMNS = [
     "id", "timestamp", "timestamp_exit", "vehicle_class", "lane", "direction",
@@ -127,16 +128,59 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     def _stamp() -> str:
         return datetime.now().strftime("%Y%m%d")
 
-    def _csv_response(rows: list[dict], columns: list[str], filename: str) -> Response:
-        """CSV completo en memoria: una semana de eventos son unos miles de filas."""
-        buf = io.StringIO()
-        writer = csv.DictWriter(
-            buf, fieldnames=columns, extrasaction="ignore", lineterminator="\r\n"
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-        return Response(
-            content=buf.getvalue(),
+    MAX_EXPORT_ROWS = 100_000
+    EXPORT_BATCH = 500
+
+    def _csv_stream(sql: str, params: tuple, columns: list[str]):
+        """Genera el CSV por lotes; nunca materializa el periodo completo."""
+        conn = _connect()
+        try:
+            cur = conn.execute(sql, params)
+            buf = io.StringIO()
+            writer = csv.DictWriter(
+                buf, fieldnames=columns, extrasaction="ignore", lineterminator="\r\n"
+            )
+            writer.writeheader()
+            yield buf.getvalue()
+            sent = 0
+            while sent < MAX_EXPORT_ROWS:
+                rows = cur.fetchmany(min(EXPORT_BATCH, MAX_EXPORT_ROWS - sent))
+                if not rows:
+                    break
+                buf = io.StringIO()
+                writer = csv.DictWriter(
+                    buf, fieldnames=columns, extrasaction="ignore", lineterminator="\r\n"
+                )
+                writer.writerows(dict(r) for r in rows)
+                yield buf.getvalue()
+                sent += len(rows)
+            if sent >= MAX_EXPORT_ROWS:
+                logger.warning(
+                    "Export CSV truncado a %d filas; acota days/filtros",
+                    MAX_EXPORT_ROWS,
+                )
+        finally:
+            conn.close()
+
+    def _csv_response(
+        sql: str, params: tuple, columns: list[str], filename: str
+    ) -> StreamingResponse:
+        """Valida la consulta antes de enviar cabeceras y luego hace streaming."""
+        stream = _csv_stream(sql, params, columns)
+        try:
+            first = next(stream)
+        except sqlite3.Error as exc:
+            logger.exception("Export CSV falló: %s", exc)
+            raise HTTPException(status_code=500, detail="No se pudo exportar")
+        except StopIteration:
+            first = ""
+
+        def body():
+            yield first
+            yield from stream
+
+        return StreamingResponse(
+            body(),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
@@ -183,12 +227,28 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     # Valores aceptados por los filtros. Un filtro con una errata
     # (`?vehicle=cards`) devolvía 200 con lista vacía y el dashboard decía
-    # "sin eventos": indistinguible de un día tranquilo.
-    NOISE_CATEGORIES = set(
+    # "sin eventos": indistinguible de un día tranquilo. Se incluyen los
+    # valores históricos de la DB para que un cambio de config no congele
+    # el panel con un 400.
+    _BASE_CATEGORIES = set(
         (config.get("audio_classifier") or {}).get("category_map") or {}
     ) | {"other"}
-    VEHICLE_FILTERS = {"car", "truck", "bus", "motorcycle", "bicycle", "van",
-                       "person", "unknown"} | set(config.get("noise_priority") or {})
+    _BASE_VEHICLES = {"car", "truck", "bus", "motorcycle", "bicycle", "van",
+                      "person", "unknown"} | set(config.get("noise_priority") or {})
+    NOISE_CATEGORIES = _BASE_CATEGORIES | {
+        r["c"] for r in _query(
+            "SELECT DISTINCT sound_category c FROM noise_events"
+            " WHERE sound_category IS NOT NULL AND sound_category != ''"
+        )
+    }
+    VEHICLE_FILTERS = _BASE_VEHICLES | {
+        r["c"] for r in _query(
+            "SELECT DISTINCT vehicle_class c FROM noise_events"
+            " WHERE vehicle_class IS NOT NULL AND vehicle_class != ''"
+            " UNION SELECT DISTINCT vehicle_class FROM vehicle_passages"
+            " WHERE vehicle_class IS NOT NULL AND vehicle_class != ''"
+        )
+    }
     DIRECTIONS = {"ltr", "rtl"}
 
     def _validate_filter(name: str, value: str | None, allowed: set[str]) -> None:
@@ -532,31 +592,38 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         min_db: float | None = None,
         vehicle: str | None = None,
         category: str | None = None,
+        direction: str | None = None,
     ):
         """Eventos de los últimos `days` días en CSV (evidencia para un reclamo)."""
         since = _since(days)
         sql = (
-            "SELECT id, timestamp, db_max, db_avg, trigger_type, sound_class,"
-            " sound_category, sound_confidence, vehicle_class, lane, confidence,"
-            " passage_id, duration_ms, audio_muted, pinned, clip_path"
-            " FROM noise_events WHERE timestamp >= ?"
+            "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
+            " e.sound_class, e.sound_category, e.sound_confidence,"
+            " e.vehicle_class, e.lane, p.direction, e.confidence, e.passage_id,"
+            " e.duration_ms, e.audio_muted, e.pinned, e.clip_path"
+            " FROM noise_events e"
+            " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
+            " WHERE e.timestamp >= ?"
         )
         params: list = [since]
         if min_db is not None:
-            sql += " AND db_max >= ?"
+            sql += " AND e.db_max >= ?"
             params.append(min_db)
         if vehicle:
             _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
-            sql += " AND vehicle_class = ?"
+            sql += " AND e.vehicle_class = ?"
             params.append(vehicle)
         if category:
             _validate_filter("category", category, NOISE_CATEGORIES)
-            sql += " AND sound_category = ?"
+            sql += " AND e.sound_category = ?"
             params.append(category)
-        sql += " ORDER BY timestamp"
-        rows = _query(sql, tuple(params))
+        if direction:
+            _validate_filter("direction", direction, DIRECTIONS)
+            sql += " AND p.direction = ?"
+            params.append(direction)
+        sql += " ORDER BY e.timestamp"
         return _csv_response(
-            rows, EVENTS_CSV_COLUMNS, f"eventos_{_stamp()}.csv"
+            sql, tuple(params), EVENTS_CSV_COLUMNS, f"eventos_{_stamp()}.csv"
         )
 
     @app.get("/api/export/passages.csv")
@@ -590,9 +657,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             sql += " AND direction = ?"
             params.append(direction)
         sql += " ORDER BY timestamp"
-        rows = _query(sql, tuple(params))
         return _csv_response(
-            rows, PASSAGES_CSV_COLUMNS, f"pasajes_{_stamp()}.csv"
+            sql, tuple(params), PASSAGES_CSV_COLUMNS, f"pasajes_{_stamp()}.csv"
         )
 
     @app.get("/api/clips/{event_id}")

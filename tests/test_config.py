@@ -69,6 +69,25 @@ class ValidateConfigTest(unittest.TestCase):
             validate_config(self.cfg)
         self.assertIn("video.detection_threshold", str(ctx.exception))
 
+    def test_nan_and_inf_are_rejected(self):
+        for value in (float("nan"), float("inf")):
+            self.cfg["triggers"]["peak_db"] = value
+            with self.assertRaises(ConfigError):
+                validate_config(self.cfg)
+
+    def test_audio_file_requires_existing_path(self):
+        self.cfg["audio"]["source"] = "file"
+        self.cfg["audio"]["file_path"] = "no-existe.wav"
+        with self.assertRaises(ConfigError) as ctx:
+            validate_config(self.cfg, base_dir=Path(self.tmp.name))
+        self.assertIn("audio.file_path", str(ctx.exception))
+
+    def test_invalid_tracker_value_is_rejected(self):
+        self.cfg.setdefault("tracker", {})["max_distance"] = -1
+        with self.assertRaises(ConfigError) as ctx:
+            validate_config(self.cfg)
+        self.assertIn("tracker.max_distance", str(ctx.exception))
+
     def test_wrong_type_is_rejected(self):
         self.cfg["audio"]["sample_rate"] = "44100"
         with self.assertRaises(ConfigError) as ctx:
