@@ -322,7 +322,15 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
         with open(schema_path, "r", encoding="utf-8") as f:
             schema_sql = f.read()
 
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        # WAL: un lector largo (export CSV en streaming) no bloquea a los
+        # writers de captura/eventos. Es persistente para esta base.
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error as exc:
+            logger_module.warning("No se pudo activar WAL en %s: %s", db_path, exc)
         for statement in schema_sql.split(";"):
             # Strip comments and whitespace to check if there's real SQL
             lines = [

@@ -93,7 +93,9 @@ def main():
         config = validate_config(load_config(base_dir / "config.yaml"), base_dir=base_dir)
     except (FileNotFoundError, ConfigError) as exc:
         logger.error("Config inválida: %s", exc)
-        return 1
+        # Código distinto de 1: systemd solo evita reiniciar este fallo
+        # permanente (`RestartPreventExitStatus=78`), no cualquier crash.
+        return 78
 
     classifier = _load_audio_classifier(config, base_dir)
 

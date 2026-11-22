@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import example_config  # noqa: E402
-from src.utils import ConfigError, validate_config  # noqa: E402
+from src.utils import ConfigError, init_database, validate_config  # noqa: E402
 
 
 class ValidateConfigTest(unittest.TestCase):
@@ -87,6 +87,16 @@ class ValidateConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError) as ctx:
             validate_config(self.cfg)
         self.assertIn("tracker.max_distance", str(ctx.exception))
+
+    def test_init_database_enables_wal(self):
+        import sqlite3
+        db = init_database(self.cfg, PROJECT_DIR)
+        conn = sqlite3.connect(db)
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(mode.lower(), "wal")
 
     def test_wrong_type_is_rejected(self):
         self.cfg["audio"]["sample_rate"] = "44100"
