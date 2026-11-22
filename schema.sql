@@ -82,3 +82,10 @@ CREATE TABLE IF NOT EXISTS audio_levels (
 );
 
 CREATE INDEX IF NOT EXISTS idx_al_minute ON audio_levels(minute);
+
+CREATE TABLE IF NOT EXISTS acoustic_trigger_decisions (
+    event_table TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    decision_json TEXT NOT NULL,
+    PRIMARY KEY (event_table, event_id)
+);

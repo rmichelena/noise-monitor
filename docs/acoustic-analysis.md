@@ -164,3 +164,41 @@ La PR #1 cambia la ganancia A, el manejo de silencio y la exportación. La norma
 La PR #2 introduce `events` y puede reemplazar el clip al combinar un pasaje con un disparo. Los resultados conservan el esquema y la revisión que les corresponden. El worker crea su tabla al iniciarse. Al integrar la plantilla unificada, conserva el enlace de análisis para `noise` y `both`. [PR #2](https://github.com/rmichelena/noise-monitor/pull/2)
 
 La PR #3 agrega YOLO como detector seleccionable. SSD y YOLO producen las mismas clases vehiculares que consume el análisis de pasajes. [PR #3](https://github.com/rmichelena/noise-monitor/pull/3)
+
+## Qué decide la grabación de ruido
+
+`triggers.criterion` en `config.yaml` elige el disparador para nuevos eventos de ruido. Reinicia el monitor para aplicar el cambio.
+
+- `dba` conserva el modo legado y usa `peak_db`, `sustained_db` y `sustained_duration_ms`.
+- `psychoacoustic` puntúa ventanas del PCM continuo antes de guardar clips. Dispara al alcanzar `triggers.psychoacoustic.threshold`. El nivel dBA y la detección visual siguen aportando contexto al evento. El disparo psicoacústico admite eventos por debajo de los umbrales dBA y sin detección visual.
+- El análisis offline y su worker siguen complementando clips ya grabados. El registro de pasajes vehiculares sigue su propio flujo.
+
+Instala `requirements-trigger.txt` en el entorno donde corre `main.py` para activar el modo psicoacústico. Este ejemplo usa un umbral ilustrativo. Sustituye el umbral y el factor antes de usarlo en campo.
+
+~~~yaml
+audio:
+  pressure_calibration:
+    id: dayton-ganancia-medida-01
+    pa_per_unit: 1.0
+triggers:
+  criterion: psychoacoustic
+  psychoacoustic:
+    metric: loudness_mean
+    threshold: 5.0
+    window_seconds: 3
+    hop_seconds: 1.5
+~~~
+
+`loudness_mean` mide la sonoridad media de Zwicker en sones (ISO 532-1, campo libre). Es el punto de partida para pasajes vehiculares. `annoyance_pa` usa el modelo de Widmann con la implementación de phonometry (ISO 532-1, DIN, aspereza ECMA y fluctuación Osses) y tiene un umbral en unidades del índice PA. Para este piloto, usa ventanas y saltos de 2 s al empezar. El PA offline de esta rama usa aspereza Daniel–Weber. Cada modo conserva su propio modelo, ventana y versión, y requiere ajustar su umbral operativo.
+
+`pa_per_unit` corresponde al PCM crudo del micrófono con la ganancia vigente. Un calibrador de nivel SPL conocido permite obtener el factor como presión RMS de referencia dividida por RMS del PCM. La calibración AAC del worker y el offset dBA de captura tienen otros usos.
+
+El cálculo corre en un proceso separado. La captura conserva la ventana pendiente más reciente cuando la cola se llena. La decisión caduca si la demora pone en riesgo el pre-roll. El dashboard indica la métrica, el umbral y el valor que disparó el evento aunque todavía no exista un resultado del postproceso. `/api/health` expone la última latencia y las ventanas evaluadas, reemplazadas, vencidas o inválidas. Al seleccionar el modo psicoacústico, una falla del proceso se refleja en ese estado. Los clips de este modo quedan mudos si YAMNet detecta indicios de habla en el audio a guardar o si la clasificación no permite comprobarlo.
+
+### Evidencia de escucha y elección de umbral
+
+Un estudio de EPFL con 50 participantes de audición normal evaluó 25 pasajes de 3 s presentados a cuatro niveles. La correlación de Spearman con las valoraciones medias de molestia fue 0,89 para LAeq, 0,93 para PA y 0,96 para sonoridad media de Zwicker (0,97 para Moore–Glasberg). El resultado favorece sonoridad media como primer detector de pasajes en este equipo. El estudio comparó el orden de los estímulos y deja el umbral de grabación a cada instalación. [Grimaldi, Pham Vu y Lissek, Forum Acusticum 2023](https://dael.euracoustics.org/confs/fa2023/data/articles/000639.pdf)
+
+El modelo y sus ponderaciones vienen publicados, así que la operación no requiere ajustar el oído de cada persona. El umbral controla qué eventos conserva la instalación. Se elige teniendo en cuenta el volumen de clips y su utilidad, con ejemplos del entorno que incluyan eventos de bajo dBA. Los sones miden sonoridad y PA expresa un índice perceptivo. Ninguno equivale a puntos de molestia personal.
+
+En pruebas sintéticas a 44,1 kHz en este entorno, una ventana de 3 s de sonoridad media tardó aproximadamente 0,9–1,2 s. Una ventana de 2 s de PA tardó aproximadamente 1,6–2,1 s. En el ThinkCentre, mide `last_latency_ms`, `dropped` y `expired` con el tráfico real antes de elegir un salto y usar el modo de manera continua.

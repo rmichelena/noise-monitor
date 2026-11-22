@@ -11,6 +11,8 @@ import numpy as np
 import resampy
 from ai_edge_litert.interpreter import Interpreter
 
+from .utils import SPEECH_CLASSES
+
 logger = logging.getLogger(__name__)
 
 YAMNET_SAMPLE_RATE = 16000
@@ -112,7 +114,20 @@ class AudioClassifier:
         self, audio_window: np.ndarray, source_sr: int = 44100
     ) -> tuple[str, str, float]:
         """Mantiene la clasificación de etiqueta única usada por la captura."""
+        return self._best_label(self.predict_scores(audio_window, source_sr))
+
+    def classify_with_speech(self, audio_window: np.ndarray, source_sr: int):
+        """Detecta habla aunque otra etiqueta tenga el mayor score."""
+        if not np.isfinite(audio_window).all():
+            raise ValueError("audio no finito")
         scores = self.predict_scores(audio_window, source_sr)
+        if scores.shape != (len(self.labels),) or not np.isfinite(scores).all():
+            raise ValueError("scores o mapa de etiquetas YAMNet inválidos")
+        speech = any(label in SPEECH_CLASSES and score >= self.min_score
+                     for label, score in zip(self.labels, scores))
+        return (*self._best_label(scores), speech)
+
+    def _best_label(self, scores):
         top_idx = int(np.argmax(scores))
         top_score = float(scores[top_idx])
 

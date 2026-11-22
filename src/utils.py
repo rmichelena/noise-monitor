@@ -16,6 +16,11 @@ from scipy.signal import bilinear, lfilter
 
 # Presión de referencia estándar (20 µPa)
 REFERENCE_PRESSURE = 20e-6
+SPEECH_CLASSES = {
+    "Speech", "Child speech", "Child speech, kid speaking", "Conversation",
+    "Narration", "Narration, monologue",
+    "Babbling", "Speech synthesizer", "Whispering",
+}
 
 # Coeficientes del filtro A-weighting (precalculados por sample rate)
 _a_weight_cache = {}

@@ -138,6 +138,16 @@ def latest_analysis(conn, event_id: int, preferred: str | None = None) -> dict |
     ).fetchone()
     if event is None:
         return None
+    trigger_decision = None
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='acoustic_trigger_decisions'"
+    ).fetchone():
+        decision = conn.execute(
+            "SELECT decision_json FROM acoustic_trigger_decisions WHERE event_table=? AND event_id=?",
+            (table, event_id),
+        ).fetchone()
+        if decision:
+            trigger_decision = json.loads(decision[0])
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='acoustic_analysis'"
     ).fetchone()
@@ -154,6 +164,6 @@ def latest_analysis(conn, event_id: int, preferred: str | None = None) -> dict |
             result.pop("clip_path", None)
             result.pop("calibration", None)
             result["issue_codes"] = list(result.pop("issues", {}))
-            return {"event_table": table, "event_id": event_id, **result, **data}
+            return {"event_table": table, "event_id": event_id, "trigger_decision": trigger_decision, **result, **data}
     status = "unavailable" if event["audio_muted"] or not event["clip_path"] else "not_run"
-    return {"event_table": table, "event_id": event_id, "status": status}
+    return {"event_table": table, "event_id": event_id, "status": status, "trigger_decision": trigger_decision}

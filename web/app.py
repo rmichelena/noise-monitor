@@ -594,6 +594,10 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     @app.get("/api/health")
     def api_health():
-        return {"ok": True, "db": str(db_path), "db_exists": db_path.exists()}
+        health = {"ok": True, "db": str(db_path), "db_exists": db_path.exists()}
+        status = getattr(audio_monitor, "trigger_status", None)
+        if status is not None:
+            health["trigger"] = status()
+        return health
 
     return app

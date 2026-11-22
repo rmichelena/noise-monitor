@@ -1,0 +1,2 @@
+# Activar únicamente si se usa el criterio de captura psychoacoustic.
+phonometry==4.0.1

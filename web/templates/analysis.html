@@ -10,6 +10,12 @@
   {% set state = {"not_run": "Sin analizar", "pending": "Pendiente", "completed": "Completado",
                    "failed": "Fallido", "unavailable": "Audio no disponible"} %}
   <p>{{ state.get(result.status, result.status) }}{% if result.profile_name %} · {{ result.profile_name }}{% endif %}</p>
+  {% if result.trigger_decision %}
+  {% set decision = result.trigger_decision %}
+  <h3>Criterio de grabación</h3>
+  <p>{{ decision.model }} · {{ "%.2f"|format(decision.score) }} {{ decision.unit }}
+     con umbral {{ "%.2f"|format(decision.threshold) }} {{ decision.unit }}</p>
+  {% endif %}
   {% if result.get("elapsed_ms") is not none %}
   <p>Procesamiento {{ "%.2f"|format(result.elapsed_ms / 1000) }} s
     {% if result.get("event_to_analysis_ms") is not none %}
