@@ -83,7 +83,11 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         return response
 
     def _connect() -> sqlite3.Connection:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3)
+        # check_same_thread=False: el generador del CSV se itera en el
+        # threadpool de Starlette, distinto del thread que abrió la conexión.
+        conn = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, timeout=3, check_same_thread=False
+        )
         conn.row_factory = sqlite3.Row
         return conn
 
