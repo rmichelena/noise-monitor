@@ -37,6 +37,13 @@ video:
   detection_min_aspect: 0.5
   detection_max_aspect: 6.0
   overlay_classes: [car, truck, bus, motorcycle, bicycle]  # cajas en la vista en vivo
+  # Detector: "ssd" (histórico 300x300) o "yolo" (160x640, sin deformación).
+  detector: ssd
+  yolo_model_path: models/yolo11n_160x640_edgetpu.tflite
+  yolo_threshold: 0.25       # umbral propio de YOLO (el 0.12 es del SSD)
+  yolo_nms_iou: 0.45
+  yolo_max_det: 100          # cajas finales por frame
+  yolo_max_candidates: 300   # top-K antes de NMS
 
 # Buffer circular
 buffer:

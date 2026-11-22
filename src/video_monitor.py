@@ -86,6 +86,20 @@ class VideoMonitor:
             set(overlay_classes) if overlay_classes else set(VEHICLE_CLASSES)
         )
 
+        # Selector de detector: "ssd" (histórico, 300x300) o "yolo" (160x640,
+        # sin deformación). El modelo es configuración, no código.
+        self.detector_kind = str(video_cfg.get("detector", "ssd")).lower()
+        self._yolo = None
+        self._yolo_errors = 0
+        if self.detector_kind == "yolo":
+            from .yolo_detector import YOLODetector
+
+            self._yolo = YOLODetector(self.config, self.base_dir)
+        elif self.detector_kind != "ssd":
+            raise ValueError(
+                f"video.detector desconocido: {self.detector_kind!r} (ssd|yolo)"
+            )
+
         self.video_seconds = int(buffer_cfg["video_seconds"])
         # La cámara entrega más fps de los configurados (medido: ~60 con
         # framerate=30). El buffer se recorta por tiempo, no por número de
@@ -224,6 +238,10 @@ class VideoMonitor:
         evidencia principal y no dependen del Coral. `_ensure_interpreter`
         reintenta cada minuto, así que un replug se recupera en caliente.
         """
+        if self.detector_kind == "yolo":
+            ok = self._yolo.init_interpreter()
+            self._interpreter = self._yolo.interpreter
+            return ok
         try:
             delegate = load_delegate("libedgetpu.so.1", options={"device": "usb"})
         except Exception:
@@ -285,10 +303,46 @@ class VideoMonitor:
         aspect = width / height if height > 0 else 0.0
         return self.box_min_aspect <= aspect <= self.box_max_aspect
 
+    def _detection_ok(self, det: dict, frame_w: int, frame_h: int) -> bool:
+        """Filtro común de calzada/geometría para detectores externos."""
+        if not self._in_detection_filter(det["cx"], det["cy"]):
+            return False
+        if det["class"] in VEHICLE_CLASSES:
+            ymin, xmin, ymax, xmax = det["bbox"]
+            if not self._vehicle_box_ok(
+                (xmax - xmin) * frame_w, (ymax - ymin) * frame_h
+            ):
+                return False
+        return True
+
     def _run_inference(self, frame: np.ndarray) -> list[dict]:
         """Ejecuta inferencia y retorna lista de detecciones sobre umbral."""
         if self._interpreter is None:
             return []
+        if self.detector_kind == "yolo":
+            frame_h, frame_w = frame.shape[:2]
+            try:
+                dets = self._yolo.detect(frame, self.detection_roi)
+            except Exception:
+                self._yolo_errors += 1
+                if self._yolo_errors == 1 or self._yolo_errors % 500 == 0:
+                    logger.exception(
+                        "YOLODetector falló en un frame (%d errores); "
+                        "se descarta y el video sigue",
+                        self._yolo_errors,
+                    )
+                if self._yolo_errors >= 3:
+                    logger.error(
+                        "YOLODetector: 3 fallos consecutivos; invalidando "
+                        "intérprete para que se reintente el TPU"
+                    )
+                    self._interpreter = None
+                    self._yolo.interpreter = None
+                    self._tpu_retry_at = 0.0
+                    self._yolo_errors = 0
+                return []
+            self._yolo_errors = 0
+            return [d for d in dets if self._detection_ok(d, frame_w, frame_h)]
 
         h, w = self._input_shape
         frame_h, frame_w = frame.shape[:2]
