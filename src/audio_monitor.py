@@ -17,12 +17,14 @@ from queue import Full, Queue
 from typing import TYPE_CHECKING
 
 import numpy as np
-import sounddevice as sd
 from scipy.io import wavfile
 
+from .perceptual_trigger import PerceptualTrigger, Settings
 from .utils import apply_a_weighting, load_config, resolve_path, rms_to_db
 
 if TYPE_CHECKING:
+    import sounddevice as sd
+
     from .audio_classifier import AudioClassifier
 
 logger = logging.getLogger(__name__)
@@ -42,7 +44,14 @@ class AudioMonitor:
         audio_classifier: "AudioClassifier | None" = None,
     ):
         self.config = config or load_config()
-        self.event_queue = event_queue or Queue()
+        settings = Settings.load(self.config)
+        psycho = (self.config.get("triggers") or {}).get("psychoacoustic") or {}
+        try:
+            queue_size = int(psycho.get("queue_size") or 8)
+        except (TypeError, ValueError):
+            queue_size = 8
+        queue_size = max(1, min(64, queue_size))
+        self.event_queue = event_queue or Queue(maxsize=queue_size if settings else 0)
         self.base_dir = Path(base_dir or os.getcwd())
         self._classifier = audio_classifier
 
@@ -83,10 +92,13 @@ class AudioMonitor:
         else:
             self.audio_file_path = None
 
-        self.peak_db = float(triggers_cfg["peak_db"])
-        self.sustained_db = float(triggers_cfg["sustained_db"])
-        self.sustained_duration_ms = int(triggers_cfg["sustained_duration_ms"])
-        self.correlation_db = float(triggers_cfg["correlation_db"])
+        if settings is None:
+            self.peak_db = float(triggers_cfg["peak_db"])
+            self.sustained_db = float(triggers_cfg["sustained_db"])
+            self.sustained_duration_ms = int(triggers_cfg["sustained_duration_ms"])
+            self.correlation_db = float(triggers_cfg["correlation_db"])
+        else:
+            self.sustained_duration_ms = 0
 
         audio_seconds = int(buffer_cfg["audio_seconds"])
         blocks_per_second = self.sample_rate / self.block_size
@@ -121,6 +133,10 @@ class AudioMonitor:
         # hay que documentar, perdiendo muestras.
         self._classify_queue: Queue = Queue(maxsize=8)
         self._classifier_thread: threading.Thread | None = None
+        self._perceptual_trigger = (
+            PerceptualTrigger(settings, self.sample_rate, self.block_size, self.event_queue.put_nowait)
+            if settings else None
+        )
 
     def db_at(self, timestamp: float, tolerance: float = 2.0) -> float | None:
         """dB del bloque de audio más cercano al instante dado."""
@@ -136,6 +152,17 @@ class AudioMonitor:
         """Nivel dB actual (thread-safe)."""
         with self._lock:
             return self._current_db
+
+    def trigger_status(self):
+        status = (
+            self._perceptual_trigger.status()
+            if self._perceptual_trigger
+            else {"criterion": "dba", "peak_db": self.peak_db, "sustained_db": self.sustained_db}
+        )
+        manager = getattr(self, "event_manager", None)
+        if manager is not None:
+            status.update(manager.status())
+        return status
 
     def _process_block(self, block: np.ndarray, timestamp: float):
         """Procesa un bloque de audio: A-weighting, buffer, triggers."""
@@ -158,7 +185,12 @@ class AudioMonitor:
         self._accumulate_level(db, timestamp)
 
         # Guardar en buffer (timestamp, bloque raw para clips)
-        self.audio_buffer.append((timestamp, block.copy()))
+        buffered = block.copy()
+        self.audio_buffer.append((timestamp, buffered))
+
+        if self._perceptual_trigger:
+            self._perceptual_trigger.offer(timestamp, buffered, db)
+            return
 
         # Evaluar triggers
         triggered = False
@@ -179,20 +211,41 @@ class AudioMonitor:
 
         if triggered:
             event = {"type": trigger_type, "db": db, "timestamp": timestamp, "db_avg": db}
+            self._emit_trigger(event, self._get_classification_window() if self._classifier else None)
 
-            # YAMNet (~1 s de audio) se encola para el thread clasificador.
-            if self._classifier:
-                window = self._get_classification_window()
-                if window is not None:
-                    try:
-                        self._classify_queue.put_nowait((event, window))
-                    except Full:
-                        logger.warning("Cola de clasificación llena; evento sin clasificar")
-                        self.event_queue.put(event)
-                else:
-                    self.event_queue.put(event)
-            else:
-                self.event_queue.put(event)
+    def _emit_trigger(self, event, window):
+        if self._classifier and window is not None:
+            try:
+                self._classify_queue.put_nowait((event, window))
+                return
+            except Full:
+                logger.warning("Cola de clasificación llena; evento sin clasificar")
+        self.event_queue.put(event)
+
+    def classify_event_clip(self, blocks):
+        """Review all audio that would be persisted by a perceptual trigger."""
+        if self._classifier is None or not blocks:
+            if self._classifier is None and not getattr(self, "_no_classifier_warned", False):
+                logger.warning(
+                    "Sin clasificador YAMNet: los clips psicoacústicos se guardan sin audio"
+                )
+                self._no_classifier_warned = True
+            return None, "other", None, True
+        window = np.concatenate([block for _, block in blocks])
+        size = round(.975 * self.sample_rate)
+        last = max(0, len(window) - size)
+        offsets = list(range(0, last, size)) + [last]
+        try:
+            classes = [
+                self._classifier.classify_with_speech(window[i:i + size], source_sr=self.sample_rate)
+                for i in offsets
+            ]
+        except Exception:
+            logger.exception("No se pudo comprobar si el clip contiene voz")
+            return None, "other", None, True
+        muted = any(speech for _, _, _, speech in classes)
+        kind, category, score, _ = max(classes, key=lambda item: item[2])
+        return kind, category, score, muted
 
     def _accumulate_level(self, db: float, timestamp: float):
         """Agrega el nivel del bloque al minuto en curso; persiste al cambiar."""
@@ -243,9 +296,7 @@ class AudioMonitor:
                 return
             event, window = item
             try:
-                sc, cat, score = self._classifier.classify(
-                    window, source_sr=self.sample_rate
-                )
+                sc, cat, score = self._classifier.classify(window, source_sr=self.sample_rate)
                 event["sound_class"] = sc
                 event["sound_category"] = cat
                 event["sound_confidence"] = score
@@ -338,6 +389,8 @@ class AudioMonitor:
         if self._running:
             return
 
+        if self._perceptual_trigger:
+            self._perceptual_trigger.start()
         self._running = True
 
         if self._classifier and not self._classifier_thread:
@@ -356,6 +409,8 @@ class AudioMonitor:
                 self.block_size,
             )
         else:
+            import sounddevice as sd
+
             self._stream = sd.InputStream(
                 device=self.device_index,
                 channels=1,
@@ -379,6 +434,8 @@ class AudioMonitor:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        if self._perceptual_trigger:
+            self._perceptual_trigger.stop()
         # Sin join, `start()` podía lanzar un segundo lector mientras el
         # anterior seguía en su último `sleep`: dos hilos procesando el mismo
         # WAV duplicaba niveles, triggers y clips.

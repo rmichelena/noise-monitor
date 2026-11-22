@@ -10,9 +10,18 @@ audio:
   sample_rate: 44100
   block_size: 4096            # ~93ms por bloque (evita input overflow)
   calibration_offset: 0.0     # dB a sumar tras calibración
+  # Para triggers.criterion: psychoacoustic, escala del PCM crudo a Pa.
+  # pressure_calibration: {id: dayton-ajuste-01, pa_per_unit: null}
 
 # Umbrales de disparo
 triggers:
+  criterion: dba             # dba | psychoacoustic
+  # psychoacoustic:
+  #   metric: loudness_mean  # sones (recomendado para piloto) | annoyance_pa (PA experimental)
+  #   threshold: null       # configurar con el umbral operativo de la métrica elegida
+  #   window_seconds: 3
+  #   hop_seconds: 1.5
+  #   queue_size: 8           # eventos en espera del worker de clips
   peak_db: 85                 # Disparo instantáneo
   sustained_db: 70            # Umbral de persistencia
   sustained_duration_ms: 1500 # Tiempo mínimo sobre umbral

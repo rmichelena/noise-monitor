@@ -20,6 +20,11 @@ logger_module = logging.getLogger(__name__)
 
 # Presión de referencia estándar (20 µPa)
 REFERENCE_PRESSURE = 20e-6
+SPEECH_CLASSES = {
+    "Speech", "Child speech", "Child speech, kid speaking", "Conversation",
+    "Narration", "Narration, monologue",
+    "Babbling", "Speech synthesizer", "Whispering",
+}
 
 # Nivel mínimo representable. Un bloque de silencio digital (RMS exactamente
 # 0) no tiene nivel: devolver -inf contamina SQLite, el JSON del dashboard

@@ -4,29 +4,37 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MODELS_DIR="$PROJECT_DIR/models"
+MODELS_DIR="${1:-$PROJECT_DIR/models}"
 
 mkdir -p "$MODELS_DIR"
 
 YAMNET_URL="https://storage.googleapis.com/audioset/yamnet.tflite"
 LABELS_URL="https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv"
 
-echo "Descargando yamnet.tflite..."
-if [ ! -f "$MODELS_DIR/yamnet.tflite" ]; then
-    curl -L -o "$MODELS_DIR/yamnet.tflite" "$YAMNET_URL"
-    echo "  → yamnet.tflite OK ($(du -h "$MODELS_DIR/yamnet.tflite" | cut -f1))"
-else
-    echo "  → yamnet.tflite ya existe, omitiendo"
-fi
+download() {
+    local url="$1" path="$2"
+    if [ ! -s "$path" ]; then
+        curl -fL -o "$path.part" "$url"
+        mv "$path.part" "$path"
+    fi
+}
 
-echo "Descargando yamnet_class_map.csv y generando yamnet_labels.txt..."
-if [ ! -f "$MODELS_DIR/yamnet_labels.txt" ]; then
-    curl -L -o "$MODELS_DIR/yamnet_class_map.csv" "$LABELS_URL"
-    # CSV format: index,mid,display_name — extract display_name (col 3)
-    tail -n +2 "$MODELS_DIR/yamnet_class_map.csv" | cut -d',' -f3 | sed 's/^"//;s/"$//' > "$MODELS_DIR/yamnet_labels.txt"
-    echo "  → yamnet_labels.txt OK ($(wc -l < "$MODELS_DIR/yamnet_labels.txt") clases)"
-else
-    echo "  → yamnet_labels.txt ya existe, omitiendo"
-fi
+download "$YAMNET_URL" "$MODELS_DIR/yamnet.tflite"
+download "$LABELS_URL" "$MODELS_DIR/yamnet_class_map.csv"
 
+# Las comas pueden ser parte de display_name.
+python3 - "$MODELS_DIR" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+with (directory / "yamnet_class_map.csv").open(encoding="utf-8", newline="") as file:
+    classes = list(csv.DictReader(file))
+if [int(row["index"]) for row in classes] != list(range(521)):
+    raise SystemExit("El mapa de YAMNet debe contener las 521 etiquetas en orden")
+(directory / "yamnet_labels.txt").write_text(
+    "".join(row["display_name"] + "\n" for row in classes), encoding="utf-8"
+)
+PY
 echo "Listo. Modelos en: $MODELS_DIR"
