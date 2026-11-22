@@ -15,7 +15,9 @@ from .analysis_store import ROAD_VEHICLES
 from .audio_classifier import AudioClassifier, YAMNET_EXPECTED_SAMPLES, YAMNET_SAMPLE_RATE
 from .utils import REFERENCE_PRESSURE, design_a_weighting
 
-ALGORITHM_VERSION = "1"
+ALGORITHM_VERSION = "2"
+ANNOYANCE_MODEL = "Widmann 1992 / Fastl–Zwicker 16.2–16.4"
+ANNOYANCE_MIN_SECONDS = 2
 MAX_CLIP_SECONDS = 60
 PSYCHOACOUSTIC_RATE = 48000
 YAMNET_HOP = 7680
@@ -120,11 +122,23 @@ def infer_source(
 
 
 class ClipAnalyzer:
-    def __init__(self, model: Path, labels: Path, min_score: float = .3, field: str = "free"):
+    def __init__(
+        self, model: Path, labels: Path, min_score: float = .3, field: str = "free",
+        *, annoyance: bool = False,
+    ):
         from mosqito import sq_metrics
 
         if not 0 < min_score <= 1 or field not in {"free", "diffuse"}:
             raise ValueError("min_score o campo acústico inválido")
+        if annoyance and field != "free":
+            raise ValueError("el modelo de fluctuación para PA requiere campo libre")
+        self.annoyance_metrics = None
+        if annoyance:
+            try:
+                from phonometry import psychoacoustics
+            except ImportError as exc:
+                raise RuntimeError("PA requiere instalar requirements-analysis.txt") from exc
+            self.annoyance_metrics = psychoacoustics
         self.metrics = sq_metrics
         self.classifier = AudioClassifier(model, labels, {})
         if len(self.classifier.labels) != 521:
@@ -146,6 +160,7 @@ class ClipAnalyzer:
             "yamnet_hop_samples": YAMNET_HOP,
             "yamnet_sample_rate_hz": YAMNET_SAMPLE_RATE,
             "yamnet_aggregation": "max_across_windows, includes final full window or left-padded short clip",
+            "yamnet_source_ranking": "max score by class, Silence recorded separately",
             "field": field,
             "psychoacoustic_sample_rate_hz": PSYCHOACOUSTIC_RATE,
             "sharpness": "DIN 45692, mean where loudness > 0",
@@ -154,8 +169,16 @@ class ClipAnalyzer:
             "lafmax_time_constant_s": .125,
             "a_weighting_reference_hz": 1000,
         }
+        if annoyance:
+            self.parameters["annoyance"] = {
+                "model": ANNOYANCE_MODEL,
+                "phonometry_version": version("phonometry"),
+                "min_duration_s": ANNOYANCE_MIN_SECONDS,
+                "fluctuation_strength": "Osses et al. 2016 (phonometry), median across 2 s frames",
+                "sharpness_and_roughness": "same clip means as the separate MoSQITo metrics",
+            }
 
-    def classify_clip(self, samples: np.ndarray, rate: int) -> list[dict]:
+    def classify_clip(self, samples: np.ndarray, rate: int) -> dict:
         waveform = resample(np.clip(samples, -1, 1), rate, YAMNET_SAMPLE_RATE)
         last = max(0, len(waveform) - YAMNET_EXPECTED_SAMPLES)
         offsets = list(range(0, last, YAMNET_HOP)) + [last]
@@ -167,11 +190,17 @@ class ClipAnalyzer:
         ])
         if not np.isfinite(scores).all():
             raise ValueError("YAMNet devolvió scores inválidos")
-        return [
+        order = np.argsort(-scores, kind="stable")
+        labels = [
             {"label": self.classifier.labels[idx], "score": float(scores[idx])}
-            for idx in np.argsort(-scores, kind="stable")
+            for idx in order
             if scores[idx] >= self.parameters["min_score"]
         ]
+        return {
+            "audio_labels": [label for label in labels if label["label"] != "Silence"],
+            "silence_score": next((label["score"] for label in labels if label["label"] == "Silence"), None),
+            "raw_yamnet_top_label": self.classifier.labels[order[0]],
+        }
 
     def analyze(
         self, path: Path, *, calibration: dict | None = None,
@@ -192,11 +221,12 @@ class ClipAnalyzer:
                       "sample_rate_hz": None, "codec": None},
             "psychoacoustics": {
                 "loudness_n5_sone": None, "sharpness_acum": None, "roughness_asper": None,
-                "tonality": None, "model_annoyance_score": None,
+                "tonality": None, "fluctuation_strength_vacil": None, "model_annoyance_score": None,
                 "algorithm_version": ALGORITHM_VERSION,
             },
             "classification": {
                 "audio_labels": [], "audio_model": "yamnet", "visual_labels": visual_labels,
+                "silence_score": None, "raw_yamnet_top_label": None,
                 "visual_vehicle_confirmed": visual_vehicle_confirmed,
                 **infer_source([], visual_labels),
             },
@@ -220,9 +250,10 @@ class ClipAnalyzer:
             result["duration_s"] = len(samples) / rate
             result["audio"].update(sample_rate_hz=rate, codec=codec)
             try:
-                labels = self.classify_clip(samples, rate)
+                classification = self.classify_clip(samples, rate)
                 result["classification"].update(
-                    audio_labels=labels, **infer_source(labels, visual_labels, visual_vehicle_confirmed)
+                    **classification,
+                    **infer_source(classification["audio_labels"], visual_labels, visual_vehicle_confirmed),
                 )
             except (ValueError, RuntimeError) as exc:
                 issues["yamnet"] = str(exc)
@@ -292,6 +323,27 @@ class ClipAnalyzer:
                     psycho["tonality"] = finite(np.max(ratios))
             except (ArithmeticError, ValueError, IndexError, RuntimeError) as exc:
                 issues["tonality"] = str(exc)
+        if self.annoyance_metrics is not None:
+            self._experimental_annoyance(waveform, psycho, issues)
+
+    def _experimental_annoyance(self, waveform: np.ndarray, psycho: dict, issues: dict) -> None:
+        if len(waveform) < ANNOYANCE_MIN_SECONDS * PSYCHOACOUSTIC_RATE:
+            issues["annoyance"] = "PA requiere al menos 2 s de audio calibrado"
+            return
+        try:
+            fluctuation = self.annoyance_metrics.fluctuation_strength(waveform, PSYCHOACOUSTIC_RATE)
+            strength = finite(fluctuation.fluctuation_strength)
+            psycho["fluctuation_strength_vacil"] = strength
+            n5, sharpness, roughness = (psycho[key] for key in (
+                "loudness_n5_sone", "sharpness_acum", "roughness_asper",
+            ))
+            if None in (n5, sharpness, strength, roughness):
+                issues["annoyance"] = "falta una de las cuatro métricas del modelo PA"
+                return
+            score = self.annoyance_metrics.psychoacoustic_annoyance(n5, sharpness, strength, roughness)
+            psycho["model_annoyance_score"] = finite(score.annoyance)
+        except (ArithmeticError, ValueError, IndexError, RuntimeError) as exc:
+            issues["annoyance"] = str(exc)
 
 
 def finite(value) -> float | None:

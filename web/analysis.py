@@ -23,6 +23,7 @@ def analysis_router(database: Path, templates: Jinja2Templates) -> APIRouter:
         try:
             with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=3)) as conn:
                 conn.row_factory = sqlite3.Row
+                conn.execute("BEGIN")
                 result = latest_analysis(conn, event_id, event_table)
         except sqlite3.Error as exc:
             logger.warning("Consulta de análisis acústico: %s", exc)

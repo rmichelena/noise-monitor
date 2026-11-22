@@ -1,5 +1,7 @@
 # Entorno separado del proceso de captura (Python 3.12).
 mosqito==1.2.1
+# Fuerza de fluctuación y modelo PA experimental, cargados con --annoyance.
+phonometry==4.0.1
 # Requerido al importar MoSQITo 1.2.1.
 matplotlib>=3.9,<4
 ai-edge-litert>=2.1,<3

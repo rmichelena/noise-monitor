@@ -13,7 +13,7 @@ import sys
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
-from time import sleep
+from time import sleep, time
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
@@ -32,9 +32,10 @@ def write_reports(results: list[dict], csv_path: Path, summary: Path | None) -> 
     keys = [
         "event_id", "clip_path", "clip_sha256", "duration_s", "status", "elapsed_ms",
         "laeq_dba", "lafmax_dba", "calibration_id", "sample_rate_hz", "codec",
-        "loudness_n5_sone", "sharpness_acum", "roughness_asper", "tonality",
+        "loudness_n5_sone", "sharpness_acum", "roughness_asper", "tonality", "fluctuation_strength_vacil",
         "model_annoyance_score", "algorithm_version", "source_attribution", "vehicle_source",
-        "audio_labels", "acoustic_behaviors", "visual_labels", "visual_vehicle_confirmed",
+        "audio_labels", "silence_score", "raw_yamnet_top_label", "acoustic_behaviors",
+        "visual_labels", "visual_vehicle_confirmed",
         "parameters", "calibration", "human_review", "issues",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as file:
@@ -138,6 +139,11 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
                 for event in events:
                     job = start_attempt(conn, table, event, profile, args.profile)
                     try:
+                        if table == UNIFIED:
+                            origin = event["peak_ts"] if event["peak_ts"] is not None else event["end_ts"]
+                        else:
+                            origin = parse_local_time(event["timestamp"]).timestamp()
+                        event_to_analysis_ms = max(0, round((time() - origin) * 1000))
                         stored = event["clip_path"] or ""
                         path = (PROJECT_DIR / stored).resolve()
                         muted = bool(event["audio_muted"])
@@ -149,6 +155,7 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
                             visual_labels=visual, visual_vehicle_confirmed=confirmed, audio_muted=muted,
                         )
                         result["clip_path"] = stored
+                        result["event_to_analysis_ms"] = event_to_analysis_ms
                     except (ValueError, OSError) as exc:
                         result = {"status": "failed", "issues": {"worker": str(exc)},
                                   "parameters": analyzer.parameters}
@@ -166,6 +173,7 @@ def main() -> int:
     parser.add_argument("--labels", type=Path, help="lista ordenada de etiquetas AudioSet")
     parser.add_argument("--field", choices=("free", "diffuse"), default="free")
     parser.add_argument("--min-score", type=float, default=.3)
+    parser.add_argument("--annoyance", action="store_true", help="calcular PA experimental en campo libre")
     commands = parser.add_subparsers(dest="command", required=True)
     offline = commands.add_parser("offline", help="analizar clips sin abrir SQLite")
     offline.add_argument("manifest", type=Path)
@@ -193,7 +201,7 @@ def main() -> int:
         analyzer = ClipAnalyzer(
             args.model or PROJECT_DIR / model.get("model_path", "models/yamnet.tflite"),
             args.labels or PROJECT_DIR / model.get("labels_path", "models/yamnet_labels.txt"),
-            min_score=args.min_score, field=args.field,
+            min_score=args.min_score, field=args.field, annoyance=args.annoyance,
         )
         if args.command == "offline":
             run_offline(analyzer, args)

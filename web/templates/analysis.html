@@ -10,6 +10,13 @@
   {% set state = {"not_run": "Sin analizar", "pending": "Pendiente", "completed": "Completado",
                    "failed": "Fallido", "unavailable": "Audio no disponible"} %}
   <p>{{ state.get(result.status, result.status) }}{% if result.profile_name %} · {{ result.profile_name }}{% endif %}</p>
+  {% if result.get("elapsed_ms") is not none %}
+  <p>Procesamiento {{ "%.2f"|format(result.elapsed_ms / 1000) }} s
+    {% if result.get("event_to_analysis_ms") is not none %}
+    · Inicio del análisis a {{ "%.1f"|format(result.event_to_analysis_ms / 1000) }} s del evento
+    {% endif %}
+  </p>
+  {% endif %}
   {% if result.status == "failed" %}
   <p>Intentos registrados {{ result.attempts }}</p>
   {% endif %}
@@ -22,9 +29,13 @@
       <tr><th scope="row">Agudeza</th><td>{{ metric(result.psychoacoustics.sharpness_acum, "acum") }}</td></tr>
       <tr><th scope="row">Aspereza</th><td>{{ metric(result.psychoacoustics.roughness_asper, "asper") }}</td></tr>
       <tr><th scope="row">Tonalidad (TNR)</th><td>{{ metric(result.psychoacoustics.tonality, "dB") }}</td></tr>
-      <tr><th scope="row">Molestia estimada</th><td>{{ metric(result.psychoacoustics.model_annoyance_score, "") }}</td></tr>
+      <tr><th scope="row">Fuerza de fluctuación</th><td>{{ metric(result.psychoacoustics.get("fluctuation_strength_vacil"), "vacil") }}</td></tr>
+      <tr><th scope="row">Molestia psicoacústica (PA experimental)</th><td>{{ metric(result.psychoacoustics.model_annoyance_score, "") }}</td></tr>
     </tbody>
   </table>
+  {% if result.parameters and result.parameters.annoyance %}
+  <p>{{ result.parameters.annoyance.model }} · modelo perceptivo sin escala normativa</p>
+  {% endif %}
   {% if result.audio.calibration_id %}
   <p>Calibración {{ result.audio.calibration_id }}</p>
   {% else %}
@@ -34,10 +45,14 @@
   {% set issues = {"spl": "Nivel físico sin potencia medible",
                    "psychoacoustics": "Clip demasiado corto para MoSQITo",
                    "loudness_sharpness": "Error en sonoridad o agudeza",
-                   "roughness": "Error en aspereza", "tonality": "Error en tonalidad"} %}
+                   "roughness": "Error en aspereza", "tonality": "Error en tonalidad",
+                   "annoyance": "PA no disponible para este clip"} %}
   {% for issue in result.issue_codes if issue in issues %}
   <p>{{ issues[issue] }}</p>
   {% endfor %}
+  {% endif %}
+  {% if result.classification.get("silence_score") is not none %}
+  <p>YAMNet detectó silencio en alguna ventana <span class="tag">{{ "%.2f"|format(result.classification.silence_score) }}</span></p>
   {% endif %}
   {% set place = {"indoor": "Interior probable", "outdoor": "Exterior probable", "uncertain": "Incierto"} %}
   <h3>Atribución de fuente</h3>
