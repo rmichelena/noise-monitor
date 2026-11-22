@@ -12,6 +12,7 @@ normalizadas al canvas de entrada + 80 scores de clase ya sigmoidales.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import cv2
@@ -23,16 +24,11 @@ except ImportError:  # pragma: no cover - depende del host
     Interpreter = None
     load_delegate = None
 
+from .coco80_labels import COCO80_NAMES
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "models/yolo11n_160x640_edgetpu.tflite"
-
-
-def _load_labels(path: Path) -> dict[int, str]:
-    if not path.exists():
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return {i: line.strip() for i, line in enumerate(f.readlines())}
 
 
 def _iou(a: list[float], b: list[float]) -> float:
@@ -53,7 +49,7 @@ def _iou(a: list[float], b: list[float]) -> float:
 def nms(detections: list[dict], iou_threshold: float = 0.45) -> list[dict]:
     """NMS por clase; conserva la caja de mayor score."""
     keep: list[dict] = []
-    for cls in {d["class"] for d in detections}:
+    for cls in sorted({d["class"] for d in detections}):
         candidates = sorted(
             (d for d in detections if d["class"] == cls),
             key=lambda d: d["score"],
@@ -69,6 +65,7 @@ def nms(detections: list[dict], iou_threshold: float = 0.45) -> list[dict]:
             ):
                 selected.append(cand)
         keep.extend(selected)
+    keep.sort(key=lambda d: d["score"], reverse=True)
     return keep
 
 
@@ -81,17 +78,42 @@ class YOLODetector:
         raw_path = video.get("yolo_model_path") or DEFAULT_MODEL
         path = Path(raw_path)
         self.model_path = path if path.is_absolute() else self.base_dir / path
-        self.threshold = float(video.get("detection_threshold", 0.12))
+        # El umbral de YOLO es propio: el 0.12 del SSD admitía demasiados
+        # candidatos con la distribución de scores de YOLO.
+        self.threshold = float(video.get("yolo_threshold", 0.25))
         self.nms_iou = float(video.get("yolo_nms_iou", 0.45))
-        self.labels = _load_labels(self.base_dir / "models" / "coco_labels.txt")
+        self.max_det = int(video.get("yolo_max_det", 100))
+        self.max_candidates = int(video.get("yolo_max_candidates", 300))
+        self.labels = {i: name for i, name in enumerate(COCO80_NAMES)}
+        self.labels_ok = (
+            len(COCO80_NAMES) == 80
+            and self.labels.get(2) == "car"
+            and self.labels.get(5) == "bus"
+            and self.labels.get(7) == "truck"
+        )
         self.interpreter = None
         self.input_shape: tuple[int, int] = (160, 640)
         self._input_scale = 1.0 / 255.0
         self._input_zero = -128.0
+        self._input_dtype = np.int8
+        self._input_use_pixels = False
         self._output_scale = 0.006591304205358028
         self._output_zero = -128.0
+        self._output_channels = 84
+        self._output_anchors = 2100
+        self._output_transposed = False
+        self._slow_logged = False
 
     def init_interpreter(self) -> bool:
+        if not self.labels_ok:
+            logger.error(
+                "YOLODetector: labelmap COCO-80 inválido (car/bus/truck no "
+                "coinciden); detector desactivado"
+            )
+            return False
+        if not self.model_path.exists():
+            logger.error("YOLODetector: no existe el modelo %s", self.model_path)
+            return False
         if Interpreter is None or load_delegate is None:
             logger.error(
                 "YOLODetector: falta ai-edge-litert; detector yolo desactivado"
@@ -117,8 +139,40 @@ class YOLODetector:
             self._in_index = inp["index"]
             self._out_index = out["index"]
             self.input_shape = (int(inp["shape"][1]), int(inp["shape"][2]))
-            self._input_scale, self._input_zero = inp["quantization"]
-            self._output_scale, self._output_zero = out["quantization"]
+            self._input_dtype = np.dtype(inp["dtype"]).type
+            if self._input_dtype not in (np.int8, np.uint8):
+                raise ValueError(f"dtype de entrada no soportado: {inp['dtype']}")
+            self._input_scale, self._input_zero = (float(v) for v in inp["quantization"])
+            if self._input_scale <= 0:
+                raise ValueError("input quantization scale <= 0")
+            qmin, qmax = (
+                (-128, 127) if self._input_dtype is np.int8 else (0, 255)
+            )
+            self._qmin, self._qmax = qmin, qmax
+            # Si el rango real llega a ~255, el grafo espera píxeles 0..255
+            # (normalización embebida); si llega a ~1, espera 0..1.
+            self._input_use_pixels = (qmax - self._input_zero) * self._input_scale > 2.0
+
+            shape = out["shape"]
+            if len(shape) != 3 or int(shape[0]) != 1:
+                raise ValueError(f"salida con forma inesperada: {shape}")
+            channels = int(shape[1])
+            anchors = int(shape[2])
+            expected = 4 + len(self.labels)
+            self._output_transposed = False
+            if channels != expected:
+                if anchors == expected:
+                    self._output_transposed = True
+                    channels, anchors = anchors, channels
+                else:
+                    raise ValueError(
+                        f"salida {shape} no coincide con 4+{len(self.labels)} clases"
+                    )
+            self._output_channels = channels
+            self._output_anchors = anchors
+            self._output_scale, self._output_zero = (float(v) for v in out["quantization"])
+            if self._output_scale <= 0:
+                raise ValueError("output quantization scale <= 0")
         except Exception:
             logger.exception("YOLODetector: no se pudo cargar %s", self.model_path)
             self.interpreter = None
@@ -136,16 +190,18 @@ class YOLODetector:
         h, w = crop.shape[:2]
         in_h, in_w = self.input_shape
         scale = min(in_w / w, in_h / h)
-        new_w, new_h = int(round(w * scale)), int(round(h * scale))
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
         dx, dy = (in_w - new_w) // 2, (in_h - new_h) // 2
         canvas = np.full((in_h, in_w, 3), 114, dtype=np.uint8)
         resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         canvas[dy : dy + new_h, dx : dx + new_w] = resized
         # El modelo se entrenó con RGB; OpenCV entrega BGR.
         canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        quant = np.round(
-            canvas.astype(np.float32) / 255.0 / self._input_scale + self._input_zero
-        ).clip(-128, 127).astype(np.int8)
+        real = canvas.astype(np.float32) if self._input_use_pixels else canvas.astype(np.float32) / 255.0
+        quant = np.round(real / self._input_scale + self._input_zero).clip(
+            self._qmin, self._qmax
+        ).astype(self._input_dtype)
         return quant[np.newaxis, ...], scale, dx, dy
 
     def _decode(
@@ -160,18 +216,27 @@ class YOLODetector:
     ) -> list[dict]:
         """Dequantiza y mapea cajas del canvas al frame completo."""
         in_h, in_w = self.input_shape
+        if output.shape != (self._output_channels, self._output_anchors):
+            logger.error(
+                "YOLODetector: salida %s distinta de (%d, %d); frame descartado",
+                output.shape, self._output_channels, self._output_anchors,
+            )
+            return []
         raw = (output.astype(np.float32) - self._output_zero) * self._output_scale
-        boxes = raw[:4].T  # (2100, 4) cxcywh normalizado al canvas
-        scores = raw[4:].T  # (2100, 80)
+        boxes = raw[:4].T
+        scores = raw[4:].T
         best = scores.max(axis=1)
         classes = scores.argmax(axis=1)
-        mask = best >= self.threshold
+        idx = np.flatnonzero(best >= self.threshold)
+        if idx.size > self.max_candidates:
+            top = np.argpartition(best[idx], -self.max_candidates)[-self.max_candidates:]
+            idx = idx[top]
 
         crop_x1, crop_y1, crop_x2, crop_y2 = crop
         crop_w = max(1, crop_x2 - crop_x1)
         crop_h = max(1, crop_y2 - crop_y1)
         out: list[dict] = []
-        for box, score, cls in zip(boxes[mask], best[mask], classes[mask]):
+        for box, score, cls in zip(boxes[idx], best[idx], classes[idx]):
             cx, cy, bw, bh = box
             x1 = ((cx - bw / 2) * in_w - dx) / scale
             y1 = ((cy - bh / 2) * in_h - dy) / scale
@@ -199,7 +264,7 @@ class YOLODetector:
                     "lane": "left" if cx_full < frame_w / 2 else "right",
                 }
             )
-        return nms(out, self.nms_iou)
+        return nms(out, self.nms_iou)[: self.max_det]
 
     def detect(self, frame: np.ndarray, crop_box: tuple[int, int, int, int] | None) -> list[dict]:
         if self.interpreter is None:
@@ -207,12 +272,26 @@ class YOLODetector:
         h, w = frame.shape[:2]
         if crop_box is None:
             crop_box = (0, 0, w, h)
-        x1, y1, x2, y2 = crop_box
-        crop = frame[max(0, y1) : min(h, y2), max(0, x1) : min(w, x2)]
+        x1 = max(0, min(w, int(crop_box[0])))
+        y1 = max(0, min(h, int(crop_box[1])))
+        x2 = max(0, min(w, int(crop_box[2])))
+        y2 = max(0, min(h, int(crop_box[3])))
+        crop_box = (x1, y1, x2, y2)
+        crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return []
         inp, scale, dx, dy = self._preprocess(crop)
+        t0 = time.perf_counter()
         self.interpreter.set_tensor(self._in_index, inp)
         self.interpreter.invoke()
+        dt = time.perf_counter() - t0
+        if dt > 0.020 and not self._slow_logged:
+            logger.warning(
+                "YOLODetector: inferencia lenta (%.1f ms); ¿modelo sin compilar "
+                "para Edge TPU?", dt * 1000,
+            )
+            self._slow_logged = True
         output = self.interpreter.get_tensor(self._out_index)[0]
+        if self._output_transposed:
+            output = output.T
         return self._decode(output, w, h, crop_box, scale, dx, dy)

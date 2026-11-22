@@ -114,6 +114,11 @@ cp yolo11n_saved_model/yolo11n_full_integer_quant_edgetpu.tflite \
 Los pesos YOLO11 son **AGPL-3.0** (el proyecto es MIT): decisión consciente
 del operador al activar `video.detector: yolo`.
 
+Para producción, calibrar la cuantización INT8 con frames reales de esta
+cámara (día y noche) en vez de `coco8`: la salida esperada del `.tflite` es
+`[1, 84, N]` (4 cajas + 80 clases); el detector valida esa forma y el labelmap
+COCO-80 al arrancar.
+
 Modelo de clasificación de audio:
 
 ```bash

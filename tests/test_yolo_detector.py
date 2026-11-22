@@ -22,6 +22,10 @@ class YoloDecodeTest(unittest.TestCase):
         self.det.input_shape = (160, 640)
         self.det._output_scale = 0.01
         self.det._output_zero = -128.0
+        self.det._output_channels = 84
+        self.det._output_anchors = 1
+        self.det.max_candidates = 300
+        self.det.max_det = 100
 
     def _raw(self, boxes_scores):
         """boxes_scores: [(cx, cy, w, h, cls, score)] en valores reales."""
@@ -56,6 +60,78 @@ class YoloDecodeTest(unittest.TestCase):
         self.assertEqual(
             self.det._decode(raw, 640, 160, (0, 0, 640, 160), 1.0, 0, 0), []
         )
+
+    def test_preprocess_int8_normalizado(self):
+        det = YOLODetector.__new__(YOLODetector)
+        det.input_shape = (160, 640)
+        det._input_scale = 1.0 / 255.0
+        det._input_zero = -128.0
+        det._input_dtype = np.int8
+        det._input_use_pixels = False
+        det._qmin, det._qmax = -128, 127
+        crop = np.zeros((160, 640, 3), dtype=np.uint8)
+        inp, scale, dx, dy = det._preprocess(crop)
+        self.assertEqual(inp.shape, (1, 160, 640, 3))
+        self.assertEqual(inp.dtype, np.int8)
+        self.assertEqual(int(inp[0, 0, 0, 0]), -128)
+        self.assertAlmostEqual(scale, 1.0)
+
+    def test_preprocess_uint8_pixeles(self):
+        det = YOLODetector.__new__(YOLODetector)
+        det.input_shape = (160, 640)
+        det._input_scale = 1.0
+        det._input_zero = 0.0
+        det._input_dtype = np.uint8
+        det._input_use_pixels = True
+        det._qmin, det._qmax = 0, 255
+        crop = np.full((160, 640, 3), 114, dtype=np.uint8)
+        inp, _scale, _dx, _dy = det._preprocess(crop)
+        self.assertEqual(inp.dtype, np.uint8)
+        self.assertEqual(int(inp[0, 0, 0, 0]), 114)
+
+    def test_detect_con_interprete_stub(self):
+        class FakeInterpreter:
+            def __init__(self, output):
+                self.output = output
+            def set_tensor(self, index, value):
+                self.input = value
+            def invoke(self):
+                pass
+            def get_tensor(self, index):
+                return self.output[np.newaxis, ...]
+
+        det = YOLODetector.__new__(YOLODetector)
+        det.labels = {i: name for i, name in enumerate(
+            ["person", "bicycle", "car", "motorcycle", "airplane", "bus",
+             "train", "truck"] + [f"c{i}" for i in range(8, 80)]
+        )}
+        det.threshold = 0.5
+        det.nms_iou = 0.45
+        det.max_candidates = 300
+        det.max_det = 100
+        det.input_shape = (160, 640)
+        det._input_scale = 1.0 / 255.0
+        det._input_zero = -128.0
+        det._input_dtype = np.int8
+        det._input_use_pixels = False
+        det._qmin, det._qmax = -128, 127
+        det._output_scale = 0.01
+        det._output_zero = -128.0
+        det._output_channels = 84
+        det._output_anchors = 2100
+        det._output_transposed = False
+        det._slow_logged = True
+        det._in_index = 0
+        det._out_index = 0
+
+        raw = np.full((84, 2100), -128, dtype=np.int8)
+        for row, value in enumerate((0.5, 0.5, 0.1, 0.1)):
+            raw[row, 0] = round(value / det._output_scale - 128)
+        raw[4 + 2, 0] = round(0.9 / det._output_scale - 128)
+        det.interpreter = FakeInterpreter(raw)
+        dets = det.detect(np.zeros((720, 1280, 3), dtype=np.uint8), (0, 220, 1280, 400))
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["class"], "car")
 
     def test_nms_conserva_la_mejor(self):
         dets = [

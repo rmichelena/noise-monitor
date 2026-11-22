@@ -90,6 +90,7 @@ class VideoMonitor:
         # sin deformación). El modelo es configuración, no código.
         self.detector_kind = str(video_cfg.get("detector", "ssd")).lower()
         self._yolo = None
+        self._yolo_errors = 0
         if self.detector_kind == "yolo":
             from .yolo_detector import YOLODetector
 
@@ -320,7 +321,17 @@ class VideoMonitor:
             return []
         if self.detector_kind == "yolo":
             frame_h, frame_w = frame.shape[:2]
-            dets = self._yolo.detect(frame, self.detection_roi)
+            try:
+                dets = self._yolo.detect(frame, self.detection_roi)
+            except Exception:
+                self._yolo_errors += 1
+                if self._yolo_errors == 1 or self._yolo_errors % 500 == 0:
+                    logger.exception(
+                        "YOLODetector falló en un frame (%d errores); "
+                        "se descarta y el video sigue",
+                        self._yolo_errors,
+                    )
+                return []
             return [d for d in dets if self._detection_ok(d, frame_w, frame_h)]
 
         h, w = self._input_shape
