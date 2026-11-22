@@ -14,7 +14,13 @@ from queue import Queue
 
 import cv2
 import numpy as np
-from ai_edge_litert.interpreter import Interpreter, load_delegate
+
+try:  # El runtime del acelerador no hace falta para importar el módulo:
+    # los scripts y los tests lo importan en hosts sin Coral instalado.
+    from ai_edge_litert.interpreter import Interpreter, load_delegate
+except ImportError:  # pragma: no cover - depende del host
+    Interpreter = None
+    load_delegate = None
 
 from .utils import load_config
 from .vehicle_tracker import CentroidTracker
@@ -130,7 +136,7 @@ class VideoMonitor:
         self.labels_path = model_dir / "coco_labels.txt"
         self.labels = load_labels(self.labels_path)
 
-        self._interpreter: Interpreter | None = None
+        self._interpreter = None
         self._tpu_retry_at = 0.0  # epoch del próximo intento si el TPU falta
         self._tpu_retry_every = 60.0
         self._input_index = 0
@@ -161,6 +167,16 @@ class VideoMonitor:
                 logger.info(
                     "Escala de pista: %.1f px/m (%.0f px = %.0f m)",
                     px_per_m, span_px, distance_m,
+                )
+            else:
+                # Con `enabled: true` y sin referencias válidas el tracker no
+                # estima velocidad y todo pasaje queda con speed_kmh nulo, sin
+                # ningún aviso: el dashboard simplemente no muestra km/h.
+                logger.warning(
+                    "speed.enabled pero speed.reference_left_x/reference_right_x "
+                    "o reference_distance_m no son válidos (%.0f px, %.1f m): "
+                    "no se estimará velocidad",
+                    span_px, distance_m,
                 )
 
         # Centroid tracker
@@ -242,6 +258,15 @@ class VideoMonitor:
             ok = self._yolo.init_interpreter()
             self._interpreter = self._yolo.interpreter
             return ok
+
+        if Interpreter is None or load_delegate is None:
+            logger.error(
+                "VideoMonitor: falta el runtime ai-edge-litert. Detección "
+                "visual DESACTIVADA (pip install -r requirements.txt)."
+            )
+            self._interpreter = None
+            return False
+
         try:
             delegate = load_delegate("libedgetpu.so.1", options={"device": "usb"})
         except Exception:
@@ -416,18 +441,32 @@ class VideoMonitor:
         dt = time.time() - t0
         return (n / dt) if dt > 0 and n else float(self.framerate)
 
+    def _open_capture(self) -> bool:
+        """Abre (o reabre) la fuente con la resolución pedida.
+
+        Reintentar la lectura sobre un `VideoCapture` muerto no recupera una
+        cámara USB que se reenumeró: hay que soltarla y abrirla de nuevo.
+        """
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+        cap = cv2.VideoCapture(self.source)
+        if not self._is_file_source:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+            cap.set(cv2.CAP_PROP_FPS, self.framerate)
+        if not cap.isOpened():
+            cap.release()
+            return False
+        self._cap = cap
+        return True
+
     def start(self):
         """Inicia captura e inferencia."""
         if self._running:
             return
 
-        self._cap = cv2.VideoCapture(self.source)
-        if not self._is_file_source:
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            self._cap.set(cv2.CAP_PROP_FPS, self.framerate)
-
-        if not self._cap.isOpened():
+        if not self._open_capture():
             raise RuntimeError(f"No se pudo abrir cámara {self.source}")
 
         if not self._is_file_source:
@@ -515,10 +554,48 @@ class VideoMonitor:
 
         return True
 
-    def run_loop(self):
-        """Loop bloqueante de captura (para ejecutar en thread)."""
-        while self._running and self._cap:
-            self.process_frame()
+    def run_loop(self, max_failures: int = 30, backoff: float = 0.5):
+        """Loop bloqueante de captura (para ejecutar en thread).
+
+        Cuando la fuente deja de entregar frames (`process_frame` devuelve
+        False) reintenta con espera en vez de girar al 100 % de CPU. Tras
+        `max_failures` fallos suelta y reabre la cámara: un USB reenumerado no
+        se recupera leyendo el handle viejo. El hilo nunca se apaga con el
+        proceso vivo, así que un corte de más de 15 s no deja el nodo ciego
+        hasta el próximo reinicio.
+        """
+        failures = 0
+        next_reopen = 0.0
+        while self._running:
+            if self.process_frame():
+                if failures:
+                    logger.info(
+                        "Cámara %s recuperada tras %d fallos", self.source, failures
+                    )
+                failures = 0
+                continue
+            if not self._running:
+                return
+            if self._is_file_source and not self._loop_video:
+                logger.info("Fin del video de prueba (loop_video desactivado)")
+                self._running = False
+                return
+            failures += 1
+            if failures == 1:
+                logger.warning("Cámara %s sin frames; reintentando", self.source)
+            now = time.time()
+            if failures >= max_failures and now >= next_reopen:
+                logger.error(
+                    "Cámara %s sin frames tras %d intentos: reabriendo",
+                    self.source, failures,
+                )
+                if self._open_capture():
+                    logger.info("Cámara %s reabierta", self.source)
+                    failures = 0
+                else:
+                    failures = 0
+                    next_reopen = now + 5.0
+            time.sleep(backoff)
 
     def stop(self):
         """Detiene captura."""

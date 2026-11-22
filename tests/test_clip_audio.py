@@ -17,9 +17,10 @@ import numpy as np
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.event_manager import EventManager  # noqa: E402
-from src.utils import load_config  # noqa: E402
+from support import example_config, resolve_stored  # noqa: E402
 
 
 def _streams(path: str) -> set[str]:
@@ -34,9 +35,7 @@ def _streams(path: str) -> set[str]:
 class ClipAudioTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        cfg = load_config(PROJECT_DIR / "config.yaml")
-        cfg["paths"]["clips"] = self.tmp.name
-        cfg["paths"]["database"] = str(Path(self.tmp.name) / "test.db")
+        cfg = example_config(self.tmp.name)
         self.em = EventManager(None, None, config=cfg, base_dir=PROJECT_DIR)
         self.frames = [
             (1000.0 + i * 0.04, np.zeros((120, 160, 3), dtype=np.uint8))
@@ -56,7 +55,7 @@ class ClipAudioTest(unittest.TestCase):
         )
         self.assertIsNotNone(path, "el clip no se generó")
         self.assertGreater(duration, 0)
-        return str(PROJECT_DIR / path)
+        return str(resolve_stored(path))
 
     def test_clip_con_audio(self):
         self.assertEqual(_streams(self._clip(False)), {"video", "audio"})
