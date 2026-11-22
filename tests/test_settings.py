@@ -86,3 +86,19 @@ def test_settings_snapshot_requires_camera(client):
     c, _ = client
     assert c.get("/api/settings/snapshot").status_code == 401
     assert c.get("/api/settings/snapshot", auth=AUTH).status_code == 404
+
+
+def test_settings_snapshot_returns_latest_jpeg(tmp_path, monkeypatch):
+    shutil.copy(BASE_DIR / "config.yaml", tmp_path / "config.yaml")
+    config = load_config(tmp_path / "config.yaml")
+
+    class FakeVideo:
+        def latest_frame_jpeg(self):
+            return b"\xff\xd8\xff\xd9"
+
+    monkeypatch.setenv("NOISE_SETTINGS_PASSWORD", AUTH[1])
+    c = TestClient(create_app(config, tmp_path, None, FakeVideo()))
+    response = c.get("/api/settings/snapshot", auth=AUTH)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content == b"\xff\xd8\xff\xd9"
