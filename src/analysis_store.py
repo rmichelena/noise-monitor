@@ -52,6 +52,16 @@ def revision_sql(table: str) -> str:
 
 def pending_events(conn, table: str, profile: str, since: str, cutoff: str, limit: int) -> list:
     kind = "AND e.kind IN ('noise', 'both')" if table == UNIFIED else ""
+    if table == UNIFIED:
+        # El esquema unificado garantiza start_ts/end_ts, no `timestamp`.
+        since_value = datetime.fromisoformat(since).timestamp() if since else 0
+        cutoff_value = datetime.fromisoformat(cutoff).timestamp()
+        time_column = "e.start_ts"
+        order = "e.start_ts, e.id"
+    else:
+        since_value, cutoff_value = since, cutoff
+        time_column = "e.timestamp"
+        order = "e.timestamp, e.id"
     return conn.execute(
         f"""
         SELECT e.*, {revision_sql(table)} AS revision
@@ -59,14 +69,14 @@ def pending_events(conn, table: str, profile: str, since: str, cutoff: str, limi
         LEFT JOIN acoustic_analysis a
         ON a.event_table = ? AND a.event_id = e.id
           AND a.revision = {revision_sql(table)} AND a.profile = ?
-        WHERE e.timestamp >= ? AND e.timestamp <= ?
+        WHERE {time_column} >= ? AND {time_column} <= ?
         AND (coalesce(e.clip_path, '') <> '' OR e.audio_muted = 1)
         {kind}
         AND (a.id IS NULL OR a.status = 'pending' OR
              (a.status = 'failed' AND a.attempts < ? AND a.retry_after <= ?))
-        ORDER BY e.timestamp, e.id LIMIT ?
+        ORDER BY {order} LIMIT ?
         """,
-        (table, profile, since, cutoff, MAX_ATTEMPTS, time(), limit),
+        (table, profile, since_value, cutoff_value, MAX_ATTEMPTS, time(), limit),
     ).fetchall()
 
 

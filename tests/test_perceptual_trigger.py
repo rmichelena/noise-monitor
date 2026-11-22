@@ -35,6 +35,14 @@ class PerceptualTriggerTests(unittest.TestCase):
         config["triggers"].pop("criterion")
         self.assertIsNone(Settings.load(config))
 
+    def test_annoyance_requires_latency_budget(self):
+        config = self.config()
+        config["triggers"]["psychoacoustic"].update(
+            metric="annoyance_pa", window_seconds=2, hop_seconds=2,
+        )
+        with self.assertRaisesRegex(ValueError, "margen"):
+            Settings.load(config)
+
     def test_rejects_configuration_with_no_time_left_to_score(self):
         config = self.config()
         config["triggers"]["psychoacoustic"]["window_seconds"] = 2

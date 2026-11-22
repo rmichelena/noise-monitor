@@ -21,6 +21,7 @@ triggers:
   #   threshold: null       # configurar con el umbral operativo de la métrica elegida
   #   window_seconds: 3
   #   hop_seconds: 1.5
+  #   queue_size: 8           # eventos en espera del worker de clips
   peak_db: 85                 # Disparo instantáneo
   sustained_db: 70            # Umbral de persistencia
   sustained_duration_ms: 1500 # Tiempo mínimo sobre umbral

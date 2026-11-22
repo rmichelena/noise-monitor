@@ -12,6 +12,7 @@ from pathlib import Path
 
 from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
+from src.perceptual_trigger import Settings
 from src.utils import ConfigError, load_config, validate_config
 from src.video_monitor import VideoMonitor
 
@@ -91,7 +92,8 @@ def main():
     # AudioMonitor con un KeyError sin nombre y systemd reiniciaba en bucle.
     try:
         config = validate_config(load_config(base_dir / "config.yaml"), base_dir=base_dir)
-    except (FileNotFoundError, ConfigError) as exc:
+        Settings.load(config)
+    except (FileNotFoundError, ConfigError, ValueError) as exc:
         logger.error("Config inválida: %s", exc)
         # Código distinto de 1: systemd solo evita reiniciar este fallo
         # permanente (`RestartPreventExitStatus=78`), no cualquier crash.

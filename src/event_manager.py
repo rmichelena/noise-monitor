@@ -170,7 +170,10 @@ class EventManager:
         # Espaciado mínimo entre eventos: evita guardar un clip por segundo
         # cuando hay tráfico continuo (cada clip cuesta CPU y disco).
         self.cooldown_seconds = float(self.config["triggers"].get("cooldown_seconds", 0))
+        self.discarded_stale = 0
+        self.perceptual_queue_full = 0
         self._last_event_ts = 0.0
+        self._perceptual_queue: Queue = Queue(maxsize=16)
 
         self.db_path = str(resolve_path(self.config, "database", self.base_dir))
         self.clips_dir = resolve_path(self.config, "clips", self.base_dir)
@@ -447,6 +450,7 @@ class EventManager:
         if self.cooldown_seconds > 0 and timestamp - self._last_event_ts < self.cooldown_seconds:
             return
         if perceptual and time.time() >= trigger.get("expires_at", float("inf")):
+            self.discarded_stale += 1
             logger.warning("Disparo psicoacústico vencido antes de guardar el clip")
             return
 
@@ -593,15 +597,39 @@ class EventManager:
                 logger.exception("Error procesando passage: %s", e)
 
     def _trigger_loop(self):
-        """Consume trigger_queue from AudioMonitor."""
+        """Consume trigger_queue from AudioMonitor.
+
+        Los eventos psicoacústicos se derivan a un worker propio: guardar el
+        clip incluye esperar el post-roll (~5 s) y no debe bloquear la cola
+        de audio (los siguientes eventos vencerían encolados).
+        """
         while self._running:
             try:
                 trigger = self.audio_monitor.event_queue.get(timeout=0.5)
-                self._process_trigger(trigger)
             except Empty:
-                pass
+                continue
+            try:
+                if trigger.get("type") == "psychoacoustic":
+                    try:
+                        self._perceptual_queue.put_nowait(trigger)
+                    except Full:
+                        self.perceptual_queue_full += 1
+                        logger.warning("Cola psicoacústica llena; evento descartado")
+                    continue
+                self._process_trigger(trigger)
             except Exception as e:
                 logger.exception("Error procesando trigger: %s", e)
+
+    def _perceptual_loop(self):
+        while self._running:
+            try:
+                trigger = self._perceptual_queue.get(timeout=0.5)
+            except Empty:
+                continue
+            try:
+                self._process_trigger(trigger)
+            except Exception as e:
+                logger.exception("Error procesando trigger psicoacústico: %s", e)
 
     def run(self):
         """Start both consumer loops in separate threads."""
@@ -610,7 +638,14 @@ class EventManager:
             target=self._passage_loop, daemon=True, name="passage-consumer"
         )
         self._t_passage.start()
+        self._t_perceptual = threading.Thread(
+            target=self._perceptual_loop, daemon=True, name="perceptual-consumer"
+        )
+        self._t_perceptual.start()
         self._trigger_loop()  # run trigger loop in current thread
 
     def stop(self):
         self._running = False
+        thread = getattr(self, "_t_perceptual", None)
+        if thread is not None:
+            thread.join(timeout=2)

@@ -191,3 +191,19 @@ class AnalysisStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnifiedPendingEventsTest(unittest.TestCase):
+    def test_unified_schema_uses_start_ts(self):
+        import sqlite3
+        from datetime import datetime
+        from src.analysis_store import pending_events
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT, start_ts REAL, end_ts REAL, track_id INTEGER, vehicle_class TEXT, clip_path TEXT, audio_muted INTEGER)")
+        conn.execute("CREATE TABLE acoustic_analysis (id INTEGER PRIMARY KEY, event_table TEXT, event_id INTEGER, revision TEXT, profile TEXT, status TEXT, attempts INTEGER, retry_after REAL)")
+        now = datetime.now().timestamp()
+        conn.execute("INSERT INTO events VALUES (1,'noise',?,?,NULL,NULL,'clip.mp4',0)", (now-5, now-4))
+        rows = pending_events(conn, "events", "p", "", datetime.now().isoformat(timespec="seconds"), 10)
+        self.assertEqual(len(rows), 1)
+        conn.close()

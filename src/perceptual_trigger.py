@@ -73,6 +73,16 @@ class Settings:
         max_age = buffer_seconds - pre - block_time
         if max_age <= window / 2:
             raise ValueError("los buffers no dejan tiempo de cálculo después de la ventana psicoacústica")
+        # Latencia observada en el ThinkCentre: ~1,6 s para loudness y ~5,6 s
+        # para PA. Si el evento no cabe antes de que el pre-roll se evacue,
+        # no se debe aceptar la configuración (antes expiraba en silencio).
+        min_age = 6.5 if metric == "annoyance_pa" else 2.5
+        if max_age < min_age:
+            raise ValueError(
+                f"{metric} requiere al menos {min_age:.1f} s de margen "
+                f"(audio/video >= {pre + min_age + block_time:.1f} s con pre={pre}); "
+                f"configuración actual: {max_age:.1f} s"
+            )
         return cls(metric, threshold, factor, calibration_id, window, hop, max_age)
 
 
@@ -124,10 +134,26 @@ class PerceptualTrigger:
         self.model_version = None
         self.evaluated = self.dropped = self.expired = self.invalid = 0
         self.event_queue_full = 0
+        self.restarts = 0
+        self.last_error = None
         self.last_score = self.last_latency_ms = None
         self._in_flight_deadline = None
 
-    def start(self):
+    def _kill_worker(self):
+        if self._process is not None:
+            self._process.terminate()
+            self._process.join(timeout=2)
+            if self._process.is_alive():
+                self._process.kill()
+                self._process.join(timeout=2)
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except OSError:
+                pass
+        self._process = self._connection = None
+
+    def _spawn_worker(self):
         ctx = multiprocessing.get_context("spawn")
         parent, child = ctx.Pipe()
         process = ctx.Process(target=_score_process, args=(child, self.sample_rate, self.settings),
@@ -142,25 +168,21 @@ class PerceptualTrigger:
             if error:
                 raise RuntimeError(error)
         except (EOFError, RuntimeError):
-            self.stop()
+            self._kill_worker()
             raise
+
+    def start(self):
         self._stop.clear()
+        self._spawn_worker()
         self._thread = threading.Thread(target=self._dispatch, name="psychoacoustic-trigger", daemon=True)
         self._thread.start()
 
     def stop(self):
         self._stop.set()
-        if self._process is not None:
-            self._process.terminate()
-            self._process.join(timeout=2)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(timeout=2)
+        self._kill_worker()
         if self._thread is not None:
             self._thread.join(timeout=2)
-        if self._connection is not None:
-            self._connection.close()
-        self._process = self._thread = self._connection = None
+        self._thread = None
 
     def offer(self, timestamp: float, samples: np.ndarray, db: float):
         """Capture callback merely hands off references to a recent PCM window."""
@@ -195,13 +217,35 @@ class PerceptualTrigger:
             "last_latency_ms": self.last_latency_ms, "evaluated": self.evaluated,
             "dropped": self.dropped, "expired": self.expired, "invalid": self.invalid,
             "event_queue_full": self.event_queue_full,
+            "restarts": self.restarts, "last_error": self.last_error,
             "running": bool(thread and thread.is_alive() and process and process.is_alive()),
             "overdue": deadline is not None and time.time() >= deadline,
         }
 
+    def _respawn_worker(self):
+        delay = 2.0
+        while not self._stop.is_set():
+            if self._stop.wait(delay):
+                return None
+            try:
+                self._spawn_worker()
+                self.restarts += 1
+                self.last_error = None
+                logger.warning("Scorer psicoacústico reiniciado (intento %d)", self.restarts)
+                return self._connection
+            except Exception as exc:
+                self.last_error = str(exc)
+                logger.error("No se pudo reiniciar el scorer psicoacústico: %s", exc)
+                delay = min(delay * 2, 60)
+        return None
+
     def _dispatch(self):
         conn = self._connection
         while not self._stop.is_set():
+            if conn is None:
+                conn = self._respawn_worker()
+                if conn is None:
+                    return
             try:
                 window = self._pending.get(timeout=.2)
             except Empty:
@@ -219,10 +263,13 @@ class PerceptualTrigger:
                 if self._stop.is_set():
                     return
                 score, error = conn.recv()
-            except (EOFError, OSError):
-                if not self._stop.is_set():
-                    logger.error("Se detuvo el proceso de disparo psicoacústico")
-                return
+            except (EOFError, OSError) as exc:
+                self.last_error = str(exc)
+                logger.error("Se detuvo el proceso de disparo psicoacústico: %s", exc)
+                self.dropped += 1
+                self._kill_worker()
+                conn = None
+                continue
             finally:
                 self._in_flight_deadline = None
             self.last_latency_ms = round((time.time() - window[-1][0]) * 1000)

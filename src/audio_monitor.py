@@ -45,7 +45,9 @@ class AudioMonitor:
     ):
         self.config = config or load_config()
         settings = Settings.load(self.config)
-        self.event_queue = event_queue or Queue(maxsize=1 if settings else 0)
+        psycho = (self.config.get("triggers") or {}).get("psychoacoustic") or {}
+        queue_size = max(1, min(64, int(psycho.get("queue_size", 8))))
+        self.event_queue = event_queue or Queue(maxsize=queue_size if settings else 0)
         self.base_dir = Path(base_dir or os.getcwd())
         self._classifier = audio_classifier
 
