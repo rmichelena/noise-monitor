@@ -160,7 +160,8 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
                         )
                         result["clip_path"] = stored
                         result["event_to_analysis_ms"] = event_to_analysis_ms
-                    except (ValueError, OSError) as exc:
+                    except Exception as exc:
+                        logger.exception("Evento %s falló en el worker", event["id"])
                         result = {"status": "failed", "issues": {"worker": str(exc)},
                                   "parameters": analyzer.parameters}
                     finish_attempt(conn, job, result)

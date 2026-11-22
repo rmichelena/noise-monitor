@@ -92,7 +92,15 @@ def main():
     # AudioMonitor con un KeyError sin nombre y systemd reiniciaba en bucle.
     try:
         config = validate_config(load_config(base_dir / "config.yaml"), base_dir=base_dir)
-        Settings.load(config)
+        settings = Settings.load(config)
+        if settings is not None:
+            try:
+                import phonometry  # noqa: F401
+            except ImportError as exc:
+                raise ConfigError(
+                    "criterio psychoacoustic requiere requirements-trigger.txt "
+                    "(phonometry) en el entorno de captura"
+                ) from exc
     except (FileNotFoundError, ConfigError, ValueError) as exc:
         logger.error("Config inválida: %s", exc)
         # Código distinto de 1: systemd solo evita reiniciar este fallo

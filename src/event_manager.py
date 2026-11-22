@@ -171,6 +171,7 @@ class EventManager:
         # cuando hay tráfico continuo (cada clip cuesta CPU y disco).
         self.cooldown_seconds = float(self.config["triggers"].get("cooldown_seconds", 0))
         self.discarded_stale = 0
+        self.discarded_cooldown = 0
         self.perceptual_queue_full = 0
         self._last_event_ts = 0.0
         psycho = (self.config.get("triggers") or {}).get("psychoacoustic") or {}
@@ -455,6 +456,8 @@ class EventManager:
         timestamp = trigger["timestamp"]
 
         if self.cooldown_seconds > 0 and timestamp - self._last_event_ts < self.cooldown_seconds:
+            if perceptual:
+                self.discarded_cooldown += 1
             return
         if perceptual and time.time() >= trigger.get("expires_at", float("inf")):
             self.discarded_stale += 1
@@ -654,6 +657,7 @@ class EventManager:
     def status(self):
         return {
             "discarded_stale": self.discarded_stale,
+            "discarded_cooldown": self.discarded_cooldown,
             "perceptual_queue_full": self.perceptual_queue_full,
             "perceptual_queue_size": self._perceptual_queue.qsize(),
         }

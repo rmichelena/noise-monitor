@@ -65,7 +65,10 @@ class Settings:
         pre, post = int(buffer["pre_event_seconds"]), int(buffer["post_event_seconds"])
         if window < 2 or window > 2 * min(pre, post) or hop > window:
             raise ValueError("la ventana debe tener al menos 2 s, caber en el clip y cubrir cada salto")
-        buffer_seconds = min(int(buffer["audio_seconds"]), int(buffer["video_seconds"]))
+        block_count = int(int(buffer["audio_seconds"]) * config["audio"]["sample_rate"]
+                          / config["audio"]["block_size"])
+        audio_buffer_seconds = block_count * config["audio"]["block_size"] / config["audio"]["sample_rate"]
+        buffer_seconds = min(audio_buffer_seconds, int(buffer["video_seconds"]))
         if buffer_seconds < pre + post:
             raise ValueError("los buffers de audio y video deben cubrir todo el clip")
         # Reserve one audio block for timestamp quantization at the ring boundary.
@@ -80,6 +83,12 @@ class Settings:
             "triggers.psychoacoustic.expected_latency_seconds",
         )
         required = window / 2 + block_time + hop + expected_latency
+        if expected_latency > hop:
+            logger.warning(
+                "%s: latencia esperada %.1f s > hop %.1f s; se acumularán "
+                "ventanas y habrá descartes",
+                metric, expected_latency, hop,
+            )
         if max_age < required:
             raise ValueError(
                 f"{metric} requiere {required:.1f} s de margen "
