@@ -99,6 +99,17 @@ class PerceptualTriggerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "YAMNet inválidos"):
             classifier.classify_with_speech(np.zeros(8), 48000)
 
+    def test_unknown_label_does_not_mute_without_speech(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.config()
+            config["paths"].update(database=str(Path(directory) / "test.db"), clips=directory)
+            audio = AudioMonitor(config=config, base_dir=ROOT)
+            classifier = Mock()
+            classifier.classify_with_speech.return_value = ("unknown", "other", .1, False)
+            audio._classifier = classifier
+            blocks = [(0.0, np.zeros(4800))]
+            self.assertEqual(audio.classify_event_clip(blocks)[3], False)
+
     def test_preserves_pre_roll_and_screens_post_roll(self):
         with tempfile.TemporaryDirectory() as directory:
             config = self.config()

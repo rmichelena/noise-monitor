@@ -228,7 +228,7 @@ class AudioMonitor:
         except Exception:
             logger.exception("No se pudo comprobar si el clip contiene voz")
             return None, "other", None, True
-        muted = any(speech or kind == "unknown" for kind, _, _, speech in classes)
+        muted = any(speech for _, _, _, speech in classes)
         kind, category, score, _ = max(classes, key=lambda item: item[2])
         return kind, category, score, muted
 
