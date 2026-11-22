@@ -106,7 +106,7 @@ python -m venv /tmp/yoloenv
 /tmp/yoloenv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 /tmp/yoloenv/bin/pip install ultralytics
 /tmp/yoloenv/bin/python -c "from ultralytics import YOLO; \
-  YOLO('yolo11n.pt').export(format='edgetpu', imgsz=(160, 640), quantize=8, data='coco8.yaml')"
+  YOLO('yolo11n.pt').export(format='edgetpu', imgsz=(160, 640), int8=True, data='coco8.yaml')"
 cp yolo11n_saved_model/yolo11n_full_integer_quant_edgetpu.tflite \
    models/yolo11n_160x640_edgetpu.tflite
 ```

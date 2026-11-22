@@ -55,6 +55,22 @@ class YoloDecodeTest(unittest.TestCase):
         self.assertAlmostEqual(dets[0]["cy"], 150 + 156, delta=1.0)
         self.assertAlmostEqual(dets[0]["cx"], 640, delta=1.0)
 
+    def test_soporta_salida_en_pixeles_del_canvas(self):
+        self.det._output_scale = 4.0
+        raw = self._raw([(320, 80, 64, 32, 2, 4.0)])
+        dets = self.det._decode(raw, 640, 160, (0, 0, 640, 160), 1.0, 0, 0)
+        self.assertEqual(len(dets), 1)
+        self.assertAlmostEqual(dets[0]["cx"], 320, places=1)
+        self.assertAlmostEqual(dets[0]["cy"], 80, places=1)
+
+    def test_caja_en_padding_se_descarta(self):
+        # Canvas 160x640, crop 1280x310 -> 640x155, dy=2: el centro y=1 px
+        # cae en la banda gris superior, no en la imagen.
+        self.det._output_scale = 4.0
+        raw = self._raw([(10, 1, 4, 1, 2, 4.0)])
+        dets = self.det._decode(raw, 1280, 720, (0, 150, 1280, 460), 0.5, 0, 2)
+        self.assertEqual(dets, [])
+
     def test_score_bajo_se_descarta(self):
         raw = self._raw([(0.5, 0.5, 0.1, 0.1, 2, 0.05)])
         self.assertEqual(

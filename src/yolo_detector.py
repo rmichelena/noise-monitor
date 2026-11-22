@@ -82,8 +82,8 @@ class YOLODetector:
         # candidatos con la distribución de scores de YOLO.
         self.threshold = float(video.get("yolo_threshold", 0.25))
         self.nms_iou = float(video.get("yolo_nms_iou", 0.45))
-        self.max_det = int(video.get("yolo_max_det", 100))
-        self.max_candidates = int(video.get("yolo_max_candidates", 300))
+        self.max_det = max(1, int(video.get("yolo_max_det", 100)))
+        self.max_candidates = max(1, int(video.get("yolo_max_candidates", 300)))
         self.labels = {i: name for i, name in enumerate(COCO80_NAMES)}
         self.labels_ok = (
             len(COCO80_NAMES) == 80
@@ -138,7 +138,10 @@ class YOLODetector:
             out = self.interpreter.get_output_details()[0]
             self._in_index = inp["index"]
             self._out_index = out["index"]
-            self.input_shape = (int(inp["shape"][1]), int(inp["shape"][2]))
+            in_shape = inp["shape"]
+            if len(in_shape) != 4 or int(in_shape[0]) != 1 or int(in_shape[3]) != 3:
+                raise ValueError(f"entrada con forma inesperada: {in_shape}")
+            self.input_shape = (int(in_shape[1]), int(in_shape[2]))
             self._input_dtype = np.dtype(inp["dtype"]).type
             if self._input_dtype not in (np.int8, np.uint8):
                 raise ValueError(f"dtype de entrada no soportado: {inp['dtype']}")
@@ -152,6 +155,12 @@ class YOLODetector:
             # Si el rango real llega a ~255, el grafo espera píxeles 0..255
             # (normalización embebida); si llega a ~1, espera 0..1.
             self._input_use_pixels = (qmax - self._input_zero) * self._input_scale > 2.0
+            logger.info(
+                "YOLODetector: entrada %s, rango real %.3f (%s)",
+                self._input_dtype.__name__,
+                (qmax - self._input_zero) * self._input_scale,
+                "pixeles 0..255" if self._input_use_pixels else "normalizado 0..1",
+            )
 
             shape = out["shape"]
             if len(shape) != 3 or int(shape[0]) != 1:
@@ -232,16 +241,34 @@ class YOLODetector:
             top = np.argpartition(best[idx], -self.max_candidates)[-self.max_candidates:]
             idx = idx[top]
 
+        # El export actual entrega xywh normalizado 0..1; si un re-export
+        # entrega píxeles del canvas, se detecta por rango y se soporta.
+        coord_max = float(np.max(np.abs(boxes[idx]))) if idx.size else 0.0
+        if not np.isfinite(coord_max) or coord_max > max(in_w, in_h) * 1.5:
+            logger.error(
+                "YOLODetector: coordenadas fuera de rango (max %.1f); frame descartado",
+                coord_max,
+            )
+            return []
+        use_pixels = coord_max > 2.0
+
         crop_x1, crop_y1, crop_x2, crop_y2 = crop
         crop_w = max(1, crop_x2 - crop_x1)
         crop_h = max(1, crop_y2 - crop_y1)
+        new_w = max(1, int(round(crop_w * scale)))
+        new_h = max(1, int(round(crop_h * scale)))
         out: list[dict] = []
         for box, score, cls in zip(boxes[idx], best[idx], classes[idx]):
-            cx, cy, bw, bh = box
-            x1 = ((cx - bw / 2) * in_w - dx) / scale
-            y1 = ((cy - bh / 2) * in_h - dy) / scale
-            x2 = ((cx + bw / 2) * in_w - dx) / scale
-            y2 = ((cy + bh / 2) * in_h - dy) / scale
+            cx, cy, bw, bh = (float(v) for v in box)
+            if not use_pixels:
+                cx, bw = cx * in_w, bw * in_w
+                cy, bh = cy * in_h, bh * in_h
+            if not (dx <= cx <= dx + new_w and dy <= cy <= dy + new_h):
+                continue  # caja centrada en el padding del letterbox
+            x1 = ((cx - bw / 2) - dx) / scale
+            y1 = ((cy - bh / 2) - dy) / scale
+            x2 = ((cx + bw / 2) - dx) / scale
+            y2 = ((cy + bh / 2) - dy) / scale
             x1 = min(max(x1, 0.0), crop_w)
             x2 = min(max(x2, 0.0), crop_w)
             y1 = min(max(y1, 0.0), crop_h)

@@ -331,7 +331,17 @@ class VideoMonitor:
                         "se descarta y el video sigue",
                         self._yolo_errors,
                     )
+                if self._yolo_errors >= 3:
+                    logger.error(
+                        "YOLODetector: 3 fallos consecutivos; invalidando "
+                        "intérprete para que se reintente el TPU"
+                    )
+                    self._interpreter = None
+                    self._yolo.interpreter = None
+                    self._tpu_retry_at = 0.0
+                    self._yolo_errors = 0
                 return []
+            self._yolo_errors = 0
             return [d for d in dets if self._detection_ok(d, frame_w, frame_h)]
 
         h, w = self._input_shape
