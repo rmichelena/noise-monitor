@@ -68,7 +68,7 @@ El CSV incluye una fila por clip, SHA-256 del medio, códec, métricas, versione
 
 ### Molestia psicoacústica experimental
 
-Agrega `--annoyance` antes de `offline` o `worker` para calcular PA. Se requiere un clip de al menos 2 s, con calibración absoluta válida y campo libre. El resultado conserva por separado N5 (sones), la agudeza S (acum) y la aspereza R (asper, Daniel–Weber) de MoSQITo. La fuerza de fluctuación F (vacil) es la mediana de tramas de 2 s del modelo de Osses et al. (2016), implementado por phonometry 4.0.1. La versión y los parámetros quedan en el resultado. [Referencia de fuerza de fluctuación](https://phonometry.dev/reference/api/psychoacoustics/fluctuation-strength/)
+Agrega `--annoyance` antes de `offline` o `worker` para calcular PA. Se requiere un clip de al menos 2 s, con calibración absoluta válida y campo libre. El resultado conserva por separado N5 (sones), la agudeza S (acum) y la aspereza R (asper, Daniel–Weber) de MoSQITo. La fuerza de fluctuación F (vacil) es la mediana de tramas de 2 s con 50 % de solapamiento del modelo de Osses et al. (2016), implementado por phonometry 4.0.1. La versión y los parámetros quedan en el resultado. [Referencia de fuerza de fluctuación](https://phonometry.dev/reference/api/psychoacoustics/fluctuation-strength/)
 
 El cálculo aplica las ecuaciones 16.2–16.4 de Fastl y Zwicker para el modelo de Widmann. Usa las mismas medias de agudeza y aspereza que la tabla de métricas, como una composición experimental para los clips del monitor. Si falta alguna entrada, PA queda vacío. Es una estimación perceptiva sin escala normativa ni interpretación como porcentaje de personas molestas. [Referencia de PA](https://phonometry.dev/reference/api/psychoacoustics/annoyance/)
 

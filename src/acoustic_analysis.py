@@ -174,7 +174,7 @@ class ClipAnalyzer:
                 "model": ANNOYANCE_MODEL,
                 "phonometry_version": version("phonometry"),
                 "min_duration_s": ANNOYANCE_MIN_SECONDS,
-                "fluctuation_strength": "Osses et al. 2016 (phonometry), median across 2 s frames",
+                "fluctuation_strength": "Osses et al. 2016 (phonometry), median across 2 s frames, 50% overlap",
                 "sharpness_and_roughness": "same clip means as the separate MoSQITo metrics",
             }
 
