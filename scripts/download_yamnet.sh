@@ -31,7 +31,9 @@ download "$LABELS_URL" "$MODELS_DIR/yamnet_class_map.csv"
 if $WITH_CORAL; then
     coral_model="$MODELS_DIR/yamnet_edgetpu.tflite"
     if [[ ! -s "$coral_model" ]]; then
-        curl -fL -o "$coral_model.part" "$CORAL_URL"
+        # tfhub.dev responde 404 a User-Agents no navegador (p. ej. curl/8.x);
+        # sin -A la descarga falla antes del chequeo de SHA-256.
+        curl -fL -A "Mozilla/5.0" -o "$coral_model.part" "$CORAL_URL"
         if ! printf '%s  %s\n' "$CORAL_SHA256" "$coral_model.part" | sha256sum --check --status; then
             echo "SHA-256 inesperado en la descarga de YAMNet Coral" >&2
             exit 1
