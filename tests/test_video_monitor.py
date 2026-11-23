@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
@@ -28,12 +29,19 @@ class ImportWithoutAcceleratorTest(unittest.TestCase):
         self.assertTrue(hasattr(video_monitor, "VideoMonitor"))
 
     def test_interpreter_start_is_refused_cleanly(self):
+        # Nunca abrir el Coral real: en este host el runtime SÍ está instalado y
+        # abrir el delegate resetea el TPU que usa el servicio en producción.
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         monitor = VideoMonitor(config=example_config(tmp.name), base_dir=PROJECT_DIR)
         self.assertIsNone(monitor._interpreter)
-        with self.assertLogs("src.video_monitor", level="ERROR"):
+        with (
+            mock.patch.object(video_monitor, "Interpreter", None),
+            mock.patch.object(video_monitor, "load_delegate", None),
+            self.assertLogs("src.video_monitor", level="ERROR") as logs,
+        ):
             self.assertFalse(monitor._init_interpreter())
+        self.assertTrue(any("falta el runtime" in line for line in logs.output))
 
 
 class SpeedScaleTest(unittest.TestCase):
