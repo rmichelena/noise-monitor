@@ -160,6 +160,11 @@ class AudioMonitor:
             status.update(manager.status())
         return status
 
+    def classifier_status(self):
+        if self._classifier is None:
+            return {"active_backend": "disabled"}
+        return self._classifier.status()
+
     def _process_block(self, block: np.ndarray, timestamp: float):
         """Procesa un bloque de audio: A-weighting, buffer, triggers."""
         # Mono: flatten si viene (frames, 1)

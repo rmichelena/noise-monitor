@@ -349,7 +349,8 @@ class EventManager:
                 )
                 mute_audio = sound_class in SPEECH_CLASSES
             except Exception:
-                logger.debug("Sin clasificación para el clip del pasaje", exc_info=True)
+                mute_audio = True
+                logger.warning("Pasaje sin audio porque falló la clasificación", exc_info=True)
 
         sample_rate = self.config["audio"]["sample_rate"]
         clip_path, duration_ms = self._save_clip(

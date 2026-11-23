@@ -252,6 +252,21 @@ def validate_config(
     if "cooldown_seconds" in triggers:
         _check_number("triggers", "cooldown_seconds", triggers["cooldown_seconds"], 0, None)
 
+    classifier = config.get("audio_classifier")
+    if classifier is not None and not isinstance(classifier, dict):
+        raise ConfigError("'audio_classifier' debe ser una sección")
+    if classifier:
+        if classifier.get("backend", "cpu") not in ("cpu", "coral"):
+            raise ConfigError("audio_classifier.backend debe ser cpu o coral")
+        if not isinstance(classifier.get("fallback_to_cpu", True), bool):
+            raise ConfigError("audio_classifier.fallback_to_cpu debe ser booleano")
+        for key in ("model_path", "labels_path", "coral_model_path"):
+            if key == "coral_model_path" and key not in classifier:
+                continue
+            value = classifier.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"audio_classifier.{key} debe ser una ruta")
+
     tracker = config.get("tracker")
     if tracker is not None:
         if not isinstance(tracker, dict):

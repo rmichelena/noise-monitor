@@ -170,7 +170,8 @@ Los tests no necesitan cámara, micrófono, Coral ni `config.yaml`: parten de
 
 | Script | Uso |
 |---|---|
-| `scripts/download_yamnet.sh` | Descarga el modelo y las etiquetas de YAMNet |
+| `scripts/download_yamnet.sh` | Descarga YAMNet y sus etiquetas. `--coral` añade el modelo Edge TPU |
+| `scripts/benchmark_yamnet.py` | Compara CPU y Coral con los mismos clips. [Protocolo para el ThinkCentre](docs/yamnet-coral.md) |
 | `scripts/download_test_videos.sh` | Baja videos de tráfico (`yt-dlp`) para modo simulado |
 | `scripts/extract_audio_from_video.sh` | Extrae el WAV de un video de prueba |
 | `scripts/setup_simulate_videos.sh` | Prepara `data/test_videos/` y muestra la config simulada |

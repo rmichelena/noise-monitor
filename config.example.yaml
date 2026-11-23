@@ -90,7 +90,10 @@ tracker:
 
 # Clasificador de audio (YAMNet)
 audio_classifier:
+  backend: cpu                 # cpu | coral (scripts/download_yamnet.sh --coral)
   model_path: models/yamnet.tflite
+  coral_model_path: models/yamnet_edgetpu.tflite
+  fallback_to_cpu: true        # si Coral falla, usar CPU hasta el próximo reinicio
   labels_path: models/yamnet_labels.txt
   min_score: 0.3
   category_map:

@@ -27,15 +27,20 @@ def setup_logging(level: str = "INFO"):
 
 
 def _load_audio_classifier(config: dict, base_dir: Path):
-    """Intenta cargar AudioClassifier (YAMNet). Retorna None si falta modelo."""
+    """Carga el backend configurado de YAMNet."""
     ac_cfg = config.get("audio_classifier")
     if not ac_cfg:
         return None
 
     model_path = base_dir / ac_cfg["model_path"]
     labels_path = base_dir / ac_cfg["labels_path"]
+    backend = ac_cfg.get("backend", "cpu")
+    fallback_to_cpu = ac_cfg.get("fallback_to_cpu", True)
+    coral_path = base_dir / ac_cfg["coral_model_path"] if "coral_model_path" in ac_cfg else None
 
-    if not model_path.exists():
+    if backend == "coral" and fallback_to_cpu and not model_path.is_file():
+        raise ConfigError("el fallback de YAMNet Coral requiere audio_classifier.model_path (modelo CPU)")
+    if backend == "cpu" and not model_path.is_file():
         logging.getLogger("main").warning(
             "YAMNet model no encontrado en %s — clasificación deshabilitada. "
             "Ejecutar: scripts/download_yamnet.sh",
@@ -45,12 +50,20 @@ def _load_audio_classifier(config: dict, base_dir: Path):
 
     from src.audio_classifier import AudioClassifier
 
-    return AudioClassifier(
-        model_path=str(model_path),
-        labels_path=str(labels_path),
-        category_map=ac_cfg.get("category_map", {}),
-        min_score=float(ac_cfg.get("min_score", 0.3)),
-    )
+    try:
+        return AudioClassifier(
+            model_path=model_path,
+            labels_path=labels_path,
+            category_map=ac_cfg.get("category_map", {}),
+            min_score=float(ac_cfg.get("min_score", 0.3)),
+            backend=backend,
+            coral_model_path=coral_path,
+            fallback_to_cpu=fallback_to_cpu,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        if backend != "coral":
+            raise
+        raise ConfigError(f"No se pudo inicializar YAMNet Coral: {exc}") from exc
 
 
 def _start_web(config: dict, base_dir: Path, audio, video, logger):
@@ -101,13 +114,12 @@ def main():
                     "criterio psychoacoustic requiere requirements-trigger.txt "
                     "(phonometry) en el entorno de captura"
                 ) from exc
+        classifier = _load_audio_classifier(config, base_dir)
     except (FileNotFoundError, ConfigError, ValueError) as exc:
         logger.error("Config inválida: %s", exc)
         # Código distinto de 1: systemd solo evita reiniciar este fallo
         # permanente (`RestartPreventExitStatus=78`), no cualquier crash.
         return 78
-
-    classifier = _load_audio_classifier(config, base_dir)
 
     audio = AudioMonitor(config=config, base_dir=base_dir, audio_classifier=classifier)
     video = VideoMonitor(config=config, base_dir=base_dir)

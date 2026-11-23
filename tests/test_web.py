@@ -98,6 +98,12 @@ class WebTestCase(unittest.TestCase):
 
 
 class LiveApiTest(WebTestCase):
+    def test_health_distinguishes_requested_backend_from_fallback(self):
+        status = {"requested_backend": "coral", "active_backend": "cpu", "fallbacks": 1}
+        self.audio.classifier_status = lambda: status
+        health = self.client.get("/api/health").json()
+        self.assertEqual(health["audio_classifier"], status)
+
     def test_live_returns_parseable_json_with_silence(self):
         response = self.client.get("/api/live")
         self.assertEqual(response.status_code, 200)

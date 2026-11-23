@@ -820,6 +820,9 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         status = getattr(audio_monitor, "trigger_status", None)
         if status is not None:
             health["trigger"] = status()
+        classifier_status = getattr(audio_monitor, "classifier_status", None)
+        if classifier_status is not None:
+            health["audio_classifier"] = classifier_status()
         return health
 
     return app

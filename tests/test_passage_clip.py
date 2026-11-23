@@ -80,6 +80,19 @@ class PassageClipTest(unittest.TestCase):
         self.assertIn("video", streams)
         self.assertIn("audio", streams)
 
+    def test_error_de_clasificacion_guarda_pasaje_mudo(self):
+        classifier = MagicMock()
+        classifier.classify.side_effect = RuntimeError("Coral no disponible")
+        self.em.audio_monitor._classifier = classifier
+        clip, _ = self.em._save_passage_clip(self.passage)
+        self.assertTrue(clip)
+        streams = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0", str(resolve_stored(clip))],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        self.assertEqual(streams, ["video"])
+
 
 if __name__ == "__main__":
     unittest.main()
