@@ -226,6 +226,21 @@ class ExportCsvTest(WebTestCase):
 
 
 class DashboardHtmlTest(WebTestCase):
+    def test_event_label_candidates_are_available_in_api_and_dashboard(self):
+        ranked = [
+            {"label": "Truck", "category": "vehicle", "score": .81, "passes_threshold": True},
+            {"label": "Air horn, truck horn", "category": "vehicle", "score": .44, "passes_threshold": True},
+            {"label": "Engine", "category": "vehicle", "score": .23, "passes_threshold": False},
+        ]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE noise_events SET sound_labels_json=? WHERE sound_class='Truck'", (json.dumps(ranked),))
+        events = self.client.get("/api/events").json()["events"]
+        self.assertEqual(next(row["sound_labels"] for row in events if row["sound_class"] == "Truck"), ranked)
+        self.assertEqual(next(row["sound_labels"] for row in events if row["sound_class"] == "Dog"), [])
+        page = self.client.get("/partials/events").text
+        self.assertIn("Air horn, truck horn", page)
+        self.assertIn("por debajo del umbral", page)
+
     def test_dashboard_renders(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)

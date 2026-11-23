@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 YAMNET_SAMPLE_RATE = 16000
 # YAMNet expects exactly 0.975s of audio at 16kHz
 YAMNET_EXPECTED_SAMPLES = 15600
+YAMNET_HOP_SAMPLES = 7680
 
 
 class AudioClassifier:
@@ -120,12 +121,60 @@ class AudioClassifier:
         """Detecta habla aunque otra etiqueta tenga el mayor score."""
         if not np.isfinite(audio_window).all():
             raise ValueError("audio no finito")
+        scores = self._validated_scores(audio_window, source_sr)
+        return (*self._best_label(scores), self._has_speech(scores))
+
+    def classify_event(
+        self, audio: np.ndarray, source_sr: int, anchor: int, *, scan_all_speech: bool,
+    ) -> tuple[list[dict], bool]:
+        """Rank up to three source windows around the sample at the trigger."""
+        size = YAMNET_EXPECTED_SAMPLES
+        if not scan_all_speech:
+            context = round((size + 2 * YAMNET_HOP_SAMPLES) * source_sr / YAMNET_SAMPLE_RATE)
+            start = max(0, min(anchor - context // 2, len(audio) - context))
+            audio = audio[start:start + context]
+            anchor -= start
+        if not np.isfinite(audio).all():
+            raise ValueError("audio no finito")
+        if source_sr != YAMNET_SAMPLE_RATE:
+            audio = resampy.resample(audio.astype(np.float32), source_sr, YAMNET_SAMPLE_RATE)
+        last = max(0, len(audio) - size)
+        center = round(anchor * YAMNET_SAMPLE_RATE / source_sr)
+        source_offsets = {
+            min(last, max(0, center - size // 2 + shift))
+            for shift in (-YAMNET_HOP_SAMPLES, 0, YAMNET_HOP_SAMPLES)
+        }
+        speech_offsets = (set(range(0, last, size)) | {last}) if scan_all_speech else set()
+        source_scores = []
+        speech = False
+        for offset in sorted(source_offsets | speech_offsets):
+            if speech and offset not in source_offsets:
+                continue
+            scores = self._validated_scores(audio[offset:offset + size], YAMNET_SAMPLE_RATE)
+            if offset in source_offsets:
+                source_scores.append(scores)
+            speech = speech or self._has_speech(scores)
+
+        best = np.maximum.reduce(source_scores)
+        ranked = [i for i in np.argsort(-best, kind="stable") if self.labels[i] != "Silence"]
+        labels = [
+            {
+                "label": self.labels[i], "category": self._lookup_category(self.labels[i]),
+                "score": float(best[i]), "passes_threshold": bool(best[i] >= self.min_score),
+            }
+            for i in ranked[:3]
+        ]
+        return labels, speech
+
+    def _validated_scores(self, audio_window, source_sr):
         scores = self.predict_scores(audio_window, source_sr)
         if scores.shape != (len(self.labels),) or not np.isfinite(scores).all():
             raise ValueError("scores o mapa de etiquetas YAMNet inválidos")
-        speech = any(label in SPEECH_CLASSES and score >= min(self.min_score, 0.15)
-                     for label, score in zip(self.labels, scores))
-        return (*self._best_label(scores), speech)
+        return scores
+
+    def _has_speech(self, scores):
+        return any(label in SPEECH_CLASSES and score >= min(self.min_score, 0.15)
+                   for label, score in zip(self.labels, scores))
 
     def _best_label(self, scores):
         top_idx = int(np.argmax(scores))

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import math
 import sqlite3
@@ -384,7 +385,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         _validate_filter("direction", direction, DIRECTIONS)
         sql = (
             "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
-            " e.sound_class, e.sound_category, e.sound_confidence, e.vehicle_class,"
+            " e.sound_class, e.sound_category, e.sound_confidence, e.sound_labels_json, e.vehicle_class,"
             " e.clip_path, e.audio_muted, e.pinned, p.direction AS direction"
             " FROM noise_events e"
             " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
@@ -410,6 +411,12 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         rows = _query(sql, tuple(params))
         for r in rows:
             r["has_clip"] = bool(r.pop("clip_path", None))
+            encoded = r.pop("sound_labels_json", None)
+            try:
+                labels = json.loads(encoded) if encoded else []
+            except json.JSONDecodeError:
+                labels = []
+            r["sound_labels"] = labels if isinstance(labels, list) else []
         return rows
 
     def _passages(

@@ -30,7 +30,11 @@ Implementado en `src/`:
   a los clips de pasajes.
 - Triggers por pico instantáneo o por persistencia sobre umbral.
 - Clasificación de audio con YAMNet (521 clases AudioSet) agrupadas en
-  categorías: vehículo, construcción, animal, alarma, humano, otro.
+  categorías: vehículo, construcción, animal, alarma, humano, otro. Cada
+  evento usa hasta tres ventanas solapadas alrededor del disparo y conserva
+  tres etiquetas candidatas con sus scores. El dashboard y `/api/events`
+  muestran las candidatas. `Silence` queda fuera del ranking de fuentes y
+  el umbral de YAMNet sigue determinando la etiqueta principal.
 - Correlación audio-visión: si el sonido es vehicular se busca el pasaje
   reciente más plausible y se registra la clase "culpable".
 - Persistencia en SQLite (`vehicle_passages`, `noise_events`), con clips MP4

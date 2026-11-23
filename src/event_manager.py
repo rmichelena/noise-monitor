@@ -2,7 +2,7 @@
 Event Manager v2: dos flujos independientes.
 
 1. Passages (del CentroidTracker via VideoMonitor) → vehicle_passages
-2. Triggers (del AudioMonitor, enriquecidos con YAMNet) → noise_events + clips
+2. Triggers del AudioMonitor → clasificación YAMNet, noise_events y clips
 
 Correlación: si un trigger vehicular coincide con un passage reciente,
 se linkean via passage_id / noise_event_id.
@@ -468,6 +468,7 @@ class EventManager:
         sound_class = trigger.get("sound_class")
         sound_category = trigger.get("sound_category", "other")
         sound_confidence = trigger.get("sound_confidence")
+        sound_labels = []
         mute_audio = bool(trigger.get("audio_muted")) or sound_class in SPEECH_CLASSES
 
         # Ventana real del clip [t-pre, t+post]; se espera a que el post exista.
@@ -477,7 +478,7 @@ class EventManager:
         wait = t_end - time.time()
         audio_list = []
         video_list = []
-        if perceptual and wait > 0:
+        if wait > 0:
             # Hold the pre-roll before waiting so that the ring cannot evict it.
             audio_list = [(ts, block) for ts, block in self.audio_monitor.audio_buffer.copy()
                           if t_start <= ts <= t_end]
@@ -495,10 +496,6 @@ class EventManager:
             (ts, frame) for ts, frame in self.video_monitor.video_buffer.copy()
             if t_start <= ts <= t_end and ts > video_boundary
         )
-        if perceptual:
-            sound_class, sound_category, sound_confidence, speech = self.audio_monitor.classify_event_clip(audio_list)
-            mute_audio |= speech
-
         # Culpable sobre TODAS las inferencias de la ventana, no sobre el
         # último frame: un frame suelto puede no contener los vehículos que
         # sí pasaron durante el evento (el caso "dice person con 3 autos").
@@ -506,6 +503,16 @@ class EventManager:
         if not window_dets and not perceptual:
             window_dets = self.video_monitor.recent_detections
         vehicle_dets = [d for d in window_dets if d.get("class") in NOISE_PRIORITY]
+
+        # Skip low-level non-vehicle events before doing any inference.
+        if not perceptual and not vehicle_dets and db_max < self.peak_db and db_max < self.correlation_db:
+            return
+
+        if perceptual or sound_class is None:
+            sound_class, sound_category, sound_confidence, speech, sound_labels = (
+                self.audio_monitor.classify_event_clip(audio_list, timestamp, scan_all_speech=perceptual)
+            )
+            mute_audio |= speech
 
         if perceptual:
             candidates = {d["class"] for d in vehicle_dets if d["class"] not in {"person", "bicycle"}}
@@ -521,10 +528,6 @@ class EventManager:
             culprit = None
             confidence = "low"
             lane = "none"
-
-        # Skip low-level non-vehicle events with no visual correlation
-        if not perceptual and not vehicle_dets and db_max < self.peak_db and db_max < self.correlation_db:
-            return
 
         clip_path, duration_ms = self._save_clip(
             audio_list, video_list, sample_rate, timestamp, mute_audio=mute_audio, unique_name=perceptual,
@@ -549,14 +552,15 @@ class EventManager:
             """
             INSERT INTO noise_events
                 (timestamp, db_max, db_avg, trigger_type,
-                 sound_class, sound_category, sound_confidence,
+                 sound_class, sound_category, sound_confidence, sound_labels_json,
                  vehicle_class, lane, confidence,
                  passage_id, clip_path, audio_muted, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts_iso, db_max, db_avg, trigger_type,
                 sound_class, sound_category, sound_confidence,
+                json.dumps(sound_labels, ensure_ascii=False, allow_nan=False) if sound_labels else None,
                 culprit, lane, confidence,
                 passage_id, clip_path, 1 if mute_audio else 0, duration_ms,
             ),

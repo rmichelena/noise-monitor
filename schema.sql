@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS noise_events (
     sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
     sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
     sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
+    sound_labels_json TEXT,            -- Hasta tres etiquetas YAMNet ordenadas por score
     vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
     lane TEXT,                         -- 'left', 'right', 'both', 'none'
     confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
@@ -56,6 +57,7 @@ ALTER TABLE vehicle_passages ADD COLUMN pinned_at TEXT;
 ALTER TABLE noise_events ADD COLUMN audio_muted INTEGER DEFAULT 0;
 ALTER TABLE noise_events ADD COLUMN pinned INTEGER DEFAULT 0;
 ALTER TABLE noise_events ADD COLUMN pinned_at TEXT;
+ALTER TABLE noise_events ADD COLUMN sound_labels_json TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);

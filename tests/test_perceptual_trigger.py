@@ -105,10 +105,10 @@ class PerceptualTriggerTests(unittest.TestCase):
             config["paths"].update(database=str(Path(directory) / "test.db"), clips=directory)
             audio = AudioMonitor(config=config, base_dir=ROOT)
             classifier = Mock()
-            classifier.classify_with_speech.return_value = ("unknown", "other", .1, False)
+            classifier.classify_event.return_value = ([], False)
             audio._classifier = classifier
             blocks = [(0.0, np.zeros(4800))]
-            self.assertEqual(audio.classify_event_clip(blocks)[3], False)
+            self.assertEqual(audio.classify_event_clip(blocks, 0, scan_all_speech=True)[3], False)
 
     def test_preserves_pre_roll_and_screens_post_roll(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -117,8 +117,9 @@ class PerceptualTriggerTests(unittest.TestCase):
             stamp = time.time()
             audio = AudioMonitor(config=config, base_dir=ROOT)
             classifier = Mock()
-            classifier.classify_with_speech.side_effect = [("Car", "vehicle", .8, False),
-                                                           ("Car", "vehicle", .9, True)]
+            classifier.classify_event.return_value = (
+                [{"label": "Car", "category": "vehicle", "score": .9, "passes_threshold": True}], True,
+            )
             audio._classifier = classifier
             audio.audio_buffer.extend([(stamp - 4, np.zeros(4800)), (stamp, np.zeros(42000))])
             video = SimpleNamespace(detections_between=lambda *args: [], video_buffer=[(stamp - 4, None)])
@@ -135,7 +136,9 @@ class PerceptualTriggerTests(unittest.TestCase):
             audio_blocks, video_frames, *_ = manager._save_clip.call_args.args
             self.assertEqual([t for t, _ in audio_blocks], [stamp - 4, stamp, stamp + 2])
             self.assertEqual([t for t, _ in video_frames], [stamp - 4, stamp + 2])
-            self.assertEqual(classifier.classify_with_speech.call_count, 2)
+            classifier.classify_event.assert_called_once()
+            self.assertTrue(classifier.classify_event.call_args.kwargs["scan_all_speech"])
+            np.testing.assert_array_equal(classifier.classify_event.call_args.args[0][-44000:], 1)
             self.assertTrue(manager._save_clip.call_args.kwargs["mute_audio"])
 
     def test_published_low_db_trigger_saves_without_visual_correlation(self):

@@ -115,6 +115,7 @@ class AudioMonitor:
         )
 
         self._running = False
+        self._event_queue_warned = False
         self._stream: sd.InputStream | None = None
         self._thread: threading.Thread | None = None
 
@@ -128,11 +129,6 @@ class AudioMonitor:
         # clips: (timestamp, dB). 30 s a 10.8 bloques/s.
         self._db_history: deque[tuple[float, float]] = deque(maxlen=600)
 
-        # YAMNet corre en un thread aparte: clasificar dentro del callback de
-        # PortAudio (~100 ms) provoca "input overflow" justo en el evento que
-        # hay que documentar, perdiendo muestras.
-        self._classify_queue: Queue = Queue(maxsize=8)
-        self._classifier_thread: threading.Thread | None = None
         self._perceptual_trigger = (
             PerceptualTrigger(settings, self.sample_rate, self.block_size, self.event_queue.put_nowait)
             if settings else None
@@ -211,41 +207,43 @@ class AudioMonitor:
 
         if triggered:
             event = {"type": trigger_type, "db": db, "timestamp": timestamp, "db_avg": db}
-            self._emit_trigger(event, self._get_classification_window() if self._classifier else None)
-
-    def _emit_trigger(self, event, window):
-        if self._classifier and window is not None:
             try:
-                self._classify_queue.put_nowait((event, window))
-                return
+                self.event_queue.put_nowait(event)
             except Full:
-                logger.warning("Cola de clasificación llena; evento sin clasificar")
-        self.event_queue.put(event)
+                if not self._event_queue_warned:
+                    logger.warning("Cola de eventos llena; se descartó un disparo dBA")
+                    self._event_queue_warned = True
 
-    def classify_event_clip(self, blocks):
-        """Review all audio that would be persisted by a perceptual trigger."""
+    def classify_event_clip(self, blocks, timestamp: float, *, scan_all_speech: bool):
+        """Clasifica el audio del evento a partir de la ventana ya capturada."""
         if self._classifier is None or not blocks:
-            if self._classifier is None and not getattr(self, "_no_classifier_warned", False):
+            if scan_all_speech and self._classifier is None and not getattr(self, "_no_classifier_warned", False):
                 logger.warning(
                     "Sin clasificador YAMNet: los clips psicoacústicos se guardan sin audio"
                 )
                 self._no_classifier_warned = True
-            return None, "other", None, True
-        window = np.concatenate([block for _, block in blocks])
-        size = round(.975 * self.sample_rate)
-        last = max(0, len(window) - size)
-        offsets = list(range(0, last, size)) + [last]
+            return None, "other", None, scan_all_speech, []
+
+        # Los timestamps marcan el final de cada bloque. Traducir el disparo
+        # a una muestra del clip mantiene el ancla aunque falte pre-roll.
+        anchor = 0
+        for end, block in blocks:
+            if end >= timestamp:
+                anchor += max(0, len(block) - round((end - timestamp) * self.sample_rate))
+                break
+            anchor += len(block)
         try:
-            classes = [
-                self._classifier.classify_with_speech(window[i:i + size], source_sr=self.sample_rate)
-                for i in offsets
-            ]
+            audio = np.concatenate([block for _, block in blocks])
+            labels, speech = self._classifier.classify_event(
+                audio, self.sample_rate, anchor, scan_all_speech=scan_all_speech,
+            )
         except Exception:
-            logger.exception("No se pudo comprobar si el clip contiene voz")
-            return None, "other", None, True
-        muted = any(speech for _, _, _, speech in classes)
-        kind, category, score, _ = max(classes, key=lambda item: item[2])
-        return kind, category, score, muted
+            logger.exception("No se pudo clasificar el audio del evento")
+            return None, "other", None, True, []
+        if labels and labels[0]["passes_threshold"]:
+            best = labels[0]
+            return best["label"], best["category"], best["score"], speech, labels
+        return "unknown", "other", labels[0]["score"] if labels else None, speech, labels
 
     def _accumulate_level(self, db: float, timestamp: float):
         """Agrega el nivel del bloque al minuto en curso; persiste al cambiar."""
@@ -287,31 +285,6 @@ class AudioMonitor:
             self._level_vals = []
             self._level_minute = None
 
-
-    def _classify_loop(self):
-        """Clasifica eventos fuera del callback de audio."""
-        while True:
-            item = self._classify_queue.get()
-            if item is None:
-                return
-            event, window = item
-            try:
-                sc, cat, score = self._classifier.classify(window, source_sr=self.sample_rate)
-                event["sound_class"] = sc
-                event["sound_category"] = cat
-                event["sound_confidence"] = score
-            except Exception:
-                logger.exception("Error en clasificación YAMNet")
-            self.event_queue.put(event)
-
-    def _get_classification_window(self, duration_s: float = 1.0) -> np.ndarray | None:
-        """Extract the last ~duration_s of audio from the buffer for YAMNet."""
-        blocks_needed = max(1, int(duration_s * self.sample_rate / self.block_size))
-        buf = list(self.audio_buffer)
-        if len(buf) < blocks_needed:
-            return None
-        recent = buf[-blocks_needed:]
-        return np.concatenate([b[1] for b in recent], axis=0)
 
     def _audio_callback(self, indata, frames, time_info, status):
         """Callback de sounddevice (modo device)."""
@@ -393,12 +366,6 @@ class AudioMonitor:
             self._perceptual_trigger.start()
         self._running = True
 
-        if self._classifier and not self._classifier_thread:
-            self._classifier_thread = threading.Thread(
-                target=self._classify_loop, name="yamnet", daemon=True
-            )
-            self._classifier_thread.start()
-
         if self.audio_source == "file" and self.audio_file_path:
             self._thread = threading.Thread(target=self._file_reader_loop, daemon=True)
             self._thread.start()
@@ -444,9 +411,5 @@ class AudioMonitor:
             if self._thread.is_alive():
                 logger.warning("El lector de audio no terminó en 5 s")
             self._thread = None
-        if self._classifier_thread:
-            self._classify_queue.put(None)
-            self._classifier_thread.join(timeout=5)
-            self._classifier_thread = None
         self._flush_level_minute()
         logger.info("AudioMonitor detenido")
