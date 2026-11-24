@@ -23,7 +23,7 @@ Implementado en `src/`:
 - Estimación de velocidad por desplazamiento horizontal, escalada con el
   tramo de pista configurado (`speed.reference_*`).
 - Clip por pasaje: cada vehículo en movimiento guarda 5 s de video, aunque
-  no supere el umbral de ruido (`vehicle_passages.clip_path`). Solo clases
+  no supere el umbral de ruido (fila `traffic` en `events`). Solo clases
   vehiculares; nunca personas sueltas.
 - Clips con voz: si YAMNet clasifica habla, el clip se guarda sin audio
   (`audio_muted`), para no publicar conversaciones de terceros. Aplica también
@@ -37,8 +37,10 @@ Implementado en `src/`:
   el umbral de YAMNet sigue determinando la etiqueta principal.
 - Correlación audio-visión: si el sonido es vehicular se busca el pasaje
   reciente más plausible y se registra la clase "culpable".
-- Persistencia en SQLite (`vehicle_passages`, `noise_events`), con clips MP4
-  ±5 s por evento (buffer circular + `ffmpeg`).
+- Persistencia en SQLite en una sola tabla `events`, un clip por fila:
+  `traffic` (pasaje sin disparo), `noise` (disparo sin pasaje) y `both`
+  (disparo correlacionado con un pasaje, con un clip que cubre los dos).
+  Clips MP4 ±5 s por evento (buffer circular + `ffmpeg`).
 
 Implementado además:
 
@@ -196,6 +198,19 @@ scripts/                Herramientas operativas y tests de hardware
 ```
 
 ## Operación
+
+Una base con el esquema anterior (`noise_events` + `vehicle_passages`) se
+migra una vez, con el servicio detenido y después de un backup:
+
+```bash
+sudo systemctl stop noise-monitor
+cp data/events.db data/events.db.pre-unified
+python scripts/migrate_unified.py --dry-run   # verifica y hace ROLLBACK
+python scripts/migrate_unified.py             # deja las viejas como *_legacy
+```
+
+Sin migrar, el pipeline se niega a arrancar (sale con 78 y systemd no lo
+reinicia en bucle) en vez de crear una `events` vacía al lado de los datos.
 
 ```bash
 sudo cp deploy/noise-monitor.service /etc/systemd/system/

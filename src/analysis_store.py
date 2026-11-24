@@ -2,11 +2,10 @@
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from time import time
 
 ROAD_VEHICLES = ("car", "motorcycle", "truck", "bus", "van")
-LEGACY = "noise_events"
 UNIFIED = "events"
 MAX_ATTEMPTS = 3
 
@@ -33,35 +32,26 @@ ON acoustic_analysis(event_table, event_id, id DESC);
 
 
 def event_table(conn: sqlite3.Connection, preferred: str | None = None) -> str | None:
+    """`events` si la base tiene la tabla única; si no, None.
+
+    Las tablas `noise_events`/`vehicle_passages` ya no se analizan: tras la
+    migración sólo quedan como `*_legacy`.
+    """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
     if preferred in (None, UNIFIED) and {"kind", "start_ts", "end_ts", "track_id"} <= columns:
         return UNIFIED
-    if preferred in (None, LEGACY) and conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (LEGACY,),
-    ).fetchone():
-        return LEGACY
     return None
 
 
 def revision_sql(table: str) -> str:
-    revision = "json_array(e.clip_path, coalesce(e.audio_muted, 0)"
-    if table == UNIFIED:
-        revision += ", e.kind, e.start_ts, e.end_ts, e.track_id, e.vehicle_class"
-    return revision + ")"
+    return ("json_array(e.clip_path, coalesce(e.audio_muted, 0),"
+            " e.kind, e.start_ts, e.end_ts, e.track_id, e.vehicle_class)")
 
 
 def pending_events(conn, table: str, profile: str, since: str, cutoff: str, limit: int) -> list:
-    kind = "AND e.kind IN ('noise', 'both')" if table == UNIFIED else ""
-    if table == UNIFIED:
-        # El esquema unificado garantiza start_ts/end_ts, no `timestamp`.
-        since_value = datetime.fromisoformat(since).timestamp() if since else 0
-        cutoff_value = datetime.fromisoformat(cutoff).timestamp()
-        time_column = "e.start_ts"
-        order = "e.start_ts, e.id"
-    else:
-        since_value, cutoff_value = since, cutoff
-        time_column = "e.timestamp"
-        order = "e.timestamp, e.id"
+    # Sólo hay audio que analizar en noise y both; `timestamp` no es la ventana.
+    since_value = datetime.fromisoformat(since).timestamp() if since else 0
+    cutoff_value = datetime.fromisoformat(cutoff).timestamp()
     return conn.execute(
         f"""
         SELECT e.*, {revision_sql(table)} AS revision
@@ -69,39 +59,27 @@ def pending_events(conn, table: str, profile: str, since: str, cutoff: str, limi
         LEFT JOIN acoustic_analysis a
         ON a.event_table = ? AND a.event_id = e.id
           AND a.revision = {revision_sql(table)} AND a.profile = ?
-        WHERE {time_column} >= ? AND {time_column} <= ?
+        WHERE e.start_ts >= ? AND e.start_ts <= ?
         AND (coalesce(e.clip_path, '') <> '' OR e.audio_muted = 1)
-        {kind}
+        AND e.kind IN ('noise', 'both')
         AND (a.id IS NULL OR a.status = 'pending' OR
              (a.status = 'failed' AND a.attempts < ? AND a.retry_after <= ?))
-        ORDER BY {order} LIMIT ?
+        ORDER BY e.start_ts, e.id LIMIT ?
         """,
         (table, profile, since_value, cutoff_value, MAX_ATTEMPTS, time(), limit),
     ).fetchall()
 
 
-def visual_context(conn, table: str, event, pre: float, post: float) -> tuple[list[str], bool]:
+def visual_context(conn, table: str, event) -> tuple[list[str], bool]:
     """Devuelve las clases de pasajes rastreados y si hay un único candidato vinculado."""
     road = ",".join("?" for _ in ROAD_VEHICLES)
-    if table == UNIFIED:
-        rows = conn.execute(
-            f"""SELECT id, vehicle_class FROM events
-                WHERE track_id IS NOT NULL AND vehicle_class IN ({road})
-                AND start_ts <= ? AND end_ts >= ?""",
-            (*ROAD_VEHICLES, event["end_ts"], event["start_ts"]),
-        ).fetchall()
-        linked = event["id"] if event["kind"] == "both" else None
-    else:
-        timestamp = datetime.fromisoformat(event["timestamp"])
-        begin = (timestamp - timedelta(seconds=pre)).isoformat(timespec="seconds")
-        end = (timestamp + timedelta(seconds=post + 1)).isoformat(timespec="seconds")
-        rows = conn.execute(
-            f"""SELECT id, vehicle_class FROM vehicle_passages
-                WHERE vehicle_class IN ({road}) AND timestamp <= ?
-                AND coalesce(timestamp_exit, timestamp) >= ?""",
-            (*ROAD_VEHICLES, end, begin),
-        ).fetchall()
-        linked = event["passage_id"]
+    rows = conn.execute(
+        f"""SELECT id, vehicle_class FROM events
+            WHERE track_id IS NOT NULL AND vehicle_class IN ({road})
+            AND start_ts <= ? AND end_ts >= ?""",
+        (*ROAD_VEHICLES, event["end_ts"], event["start_ts"]),
+    ).fetchall()
+    linked = event["id"] if event["kind"] == "both" else None
     return sorted({row["vehicle_class"] for row in rows}), len(rows) == 1 and rows[0]["id"] == linked
 
 
@@ -140,10 +118,9 @@ def latest_analysis(conn, event_id: int, preferred: str | None = None) -> dict |
     table = event_table(conn, preferred)
     if table is None:
         return None
-    kind = "AND e.kind IN ('noise', 'both')" if table == UNIFIED else ""
     event = conn.execute(
         f"""SELECT e.id, e.clip_path, e.audio_muted, {revision_sql(table)} AS revision
-            FROM {table} e WHERE e.id=? {kind}""",
+            FROM {table} e WHERE e.id=? AND e.kind IN ('noise', 'both')""",
         (event_id,),
     ).fetchone()
     if event is None:
@@ -164,9 +141,9 @@ def latest_analysis(conn, event_id: int, preferred: str | None = None) -> dict |
     if exists:
         row = conn.execute(
             """SELECT profile_name, status, attempts, elapsed_ms, result_json
-               FROM acoustic_analysis WHERE event_table=? AND event_id=?
-                 AND (revision=? OR (? AND status='completed')) ORDER BY id DESC LIMIT 1""",
-            (table, event_id, event["revision"], table == LEGACY and not event["clip_path"] and not event["audio_muted"]),
+               FROM acoustic_analysis WHERE event_table=? AND event_id=? AND revision=?
+               ORDER BY id DESC LIMIT 1""",
+            (table, event_id, event["revision"]),
         ).fetchone()
         if row is not None:
             data = dict(row)

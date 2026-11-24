@@ -11,7 +11,7 @@ from scipy.io import wavfile
 from src.acoustic_analysis import ClipAnalyzer, infer_source, read_clip
 from src.analysis_evaluation import classification_report, pairwise_rank_error, summarize
 from src.analysis_store import (
-    LEGACY, SCHEMA, UNIFIED, event_table, finish_attempt, latest_analysis,
+    SCHEMA, UNIFIED, event_table, finish_attempt, latest_analysis,
     pending_events, start_attempt, visual_context,
 )
 from src.event_manager import SPEECH_CLASSES
@@ -131,7 +131,6 @@ class AnalysisStoreTests(unittest.TestCase):
 
     def load_unified(self):
         self.conn.executescript("""
-            CREATE TABLE noise_events(id INTEGER PRIMARY KEY);
             CREATE TABLE events(
                 id INTEGER PRIMARY KEY, kind TEXT, start_ts REAL, end_ts REAL, track_id INTEGER,
                 vehicle_class TEXT, timestamp TEXT, clip_path TEXT, audio_muted INTEGER
@@ -142,7 +141,6 @@ class AnalysisStoreTests(unittest.TestCase):
     def test_unified_replacement_never_displays_old_result(self):
         self.load_unified()
         self.assertEqual(event_table(self.conn), UNIFIED)
-        self.assertEqual(event_table(self.conn, LEGACY), LEGACY)
         event, = pending_events(self.conn, UNIFIED, "profile", "", self.cutoff, 1)
         job = start_attempt(self.conn, UNIFIED, event, "profile", "base")
         self.assertEqual(latest_analysis(self.conn, 1)["status"], "pending")
@@ -170,23 +168,26 @@ class AnalysisStoreTests(unittest.TestCase):
         self.assertEqual(pending_events(self.conn, UNIFIED, "p", "", self.cutoff, 1), [])
         self.assertEqual(len(pending_events(self.conn, UNIFIED, "new", "", self.cutoff, 1)), 1)
 
-    def test_legacy_visually_linked_passage_with_competing_vehicle(self):
+    def test_without_events_there_is_no_table_to_analyze(self):
+        # Tras el cutover, una base con sólo noise_events (sin migrar) no se analiza.
+        self.conn.execute("CREATE TABLE noise_events(id INTEGER PRIMARY KEY, clip_path TEXT)")
+        self.assertIsNone(event_table(self.conn))
+        self.assertIsNone(latest_analysis(self.conn, 1))
+
+    def test_visually_linked_passage_with_competing_vehicle(self):
         self.conn.executescript("""
-            CREATE TABLE events(id INTEGER PRIMARY KEY, timestamp TEXT);
-            CREATE TABLE noise_events(id INTEGER PRIMARY KEY, clip_path TEXT, audio_muted INTEGER,
-                                      timestamp TEXT, passage_id INTEGER);
-            CREATE TABLE vehicle_passages(id INTEGER PRIMARY KEY, vehicle_class TEXT,
-                                          timestamp TEXT, timestamp_exit TEXT);
-            INSERT INTO noise_events VALUES (1, 'event.mp4', 0, '2026-11-20T12:00:00', 5);
-            INSERT INTO vehicle_passages VALUES (5, 'car', '2026-11-20T11:59:56', '2026-11-20T12:00:00');
+            CREATE TABLE events(
+                id INTEGER PRIMARY KEY, kind TEXT, start_ts REAL, end_ts REAL, track_id INTEGER,
+                vehicle_class TEXT, timestamp TEXT, clip_path TEXT, audio_muted INTEGER
+            );
+            INSERT INTO events VALUES (1, 'both', 10, 14, 7, 'car', '2026-11-20T12:00:00', 'e.mp4', 0);
         """)
-        self.assertEqual(event_table(self.conn), LEGACY)
-        event, = pending_events(self.conn, LEGACY, "p", "", self.cutoff, 1)
-        self.assertEqual(visual_context(self.conn, LEGACY, event, 5, 5), (["car"], True))
+        event, = pending_events(self.conn, UNIFIED, "p", "", self.cutoff, 1)
+        self.assertEqual(visual_context(self.conn, UNIFIED, event), (["car"], True))
         self.conn.execute(
-            "INSERT INTO vehicle_passages VALUES (6, 'car', '2026-11-20T12:00:00', '2026-11-20T12:00:03')"
+            "INSERT INTO events VALUES (2, 'traffic', 13, 16, 8, 'car', '2026-11-20T12:00:03', 'p.mp4', 0)"
         )
-        self.assertEqual(visual_context(self.conn, LEGACY, event, 5, 5), (["car"], False))
+        self.assertEqual(visual_context(self.conn, UNIFIED, event), (["car"], False))
 
 
 if __name__ == "__main__":

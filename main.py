@@ -13,7 +13,7 @@ from pathlib import Path
 from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
 from src.perceptual_trigger import Settings
-from src.utils import ConfigError, load_config, validate_config
+from src.utils import ConfigError, UnmigratedDatabaseError, init_database, load_config, validate_config
 from src.video_monitor import VideoMonitor
 
 
@@ -119,6 +119,14 @@ def main():
         logger.error("Config inválida: %s", exc)
         # Código distinto de 1: systemd solo evita reiniciar este fallo
         # permanente (`RestartPreventExitStatus=78`), no cualquier crash.
+        return 78
+
+    # Antes de abrir audio y video. Si lo hiciera recién EventManager, la
+    # excepción saldría con código 1 y systemd reiniciaría en bucle.
+    try:
+        init_database(config, base_dir)
+    except UnmigratedDatabaseError as exc:
+        logger.error("Base de datos: %s", exc)
         return 78
 
     audio = AudioMonitor(config=config, base_dir=base_dir, audio_classifier=classifier)

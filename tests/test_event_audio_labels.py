@@ -104,15 +104,15 @@ class CaptureRankingTests(unittest.TestCase):
             self.assertEqual(row[:2], ("Car", "vehicle"))
             self.assertEqual([tag["label"] for tag in json.loads(row[2])], ["Car", "Dog", "Motorcycle"])
 
-    def test_old_database_gets_nullable_label_column(self):
+    def test_events_has_nullable_label_column(self):
+        # El ALTER de noise_events murió con el cutover: la columna nace en `events`.
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "events.db"
             config = load_config(ROOT / "config.example.yaml")
             config["paths"]["database"] = str(db_path)
-            with sqlite3.connect(db_path) as conn:
-                conn.execute("CREATE TABLE noise_events(id INTEGER PRIMARY KEY, sound_class TEXT)")
-                conn.execute("INSERT INTO noise_events VALUES(1, 'Dog')")
             init_database(config, ROOT)
             with sqlite3.connect(db_path) as conn:
-                self.assertEqual(conn.execute("SELECT sound_class,sound_labels_json FROM noise_events").fetchone(),
+                conn.execute("INSERT INTO events (kind, timestamp, start_ts, end_ts, sound_class) "
+                             "VALUES ('noise', '2026-11-20T12:00:00', 1, 2, 'Dog')")
+                self.assertEqual(conn.execute("SELECT sound_class,sound_labels_json FROM events").fetchone(),
                                  ("Dog", None))

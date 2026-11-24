@@ -19,7 +19,7 @@ def analysis_router(database: Path, templates: Jinja2Templates) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/events/{event_id}/analysis")
-    def api_analysis(event_id: int, event_table: Literal["noise_events", "events"] | None = None):
+    def api_analysis(event_id: int, event_table: Literal["events"] | None = None):
         try:
             with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=3)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -34,7 +34,7 @@ def analysis_router(database: Path, templates: Jinja2Templates) -> APIRouter:
 
     @router.get("/events/{event_id}/analysis", response_class=HTMLResponse)
     def analysis_page(
-        request: Request, event_id: int, event_table: Literal["noise_events", "events"] | None = None,
+        request: Request, event_id: int, event_table: Literal["events"] | None = None,
     ):
         return templates.TemplateResponse(
             request, "analysis.html", {"result": api_analysis(event_id, event_table)},

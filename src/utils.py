@@ -323,11 +323,63 @@ def validate_config(
 
 
 
+class UnmigratedDatabaseError(RuntimeError):
+    """La base tiene el esquema anterior a la tabla única `events`."""
+
+
+# Tablas del esquema anterior. Tras scripts/migrate_unified.py quedan como *_legacy.
+PRE_UNIFIED_TABLES = ("noise_events", "vehicle_passages")
+
+
+def _check_unified(conn: sqlite3.Connection, db_path: Path, schema_sql: str | None) -> None:
+    """Falla si la base no está migrada o si `events` tiene otra forma.
+
+    Sin esto, el código nuevo sobre una base sin migrar creaba `events` vacía y
+    capturaba ahí: la migración posterior abortaba porque `events` ya tenía
+    filas, y `--force` las borraba.
+    """
+    def exists(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone() is not None
+
+    # La migración renombra las dos tablas: con el nombre original nunca es una
+    # base migrada, exista o no `events` (puede ser la `events` que creó un
+    # arranque en el orden equivocado).
+    found = [name for name in PRE_UNIFIED_TABLES if exists(name)]
+    if found:
+        raise UnmigratedDatabaseError(
+            f"{db_path} tiene {', '.join(found)} sin migrar: detener el servicio y "
+            "correr scripts/migrate_unified.py antes de arrancar esta versión"
+        )
+    legacy = [f"{name}_legacy" for name in PRE_UNIFIED_TABLES if exists(f"{name}_legacy")]
+    if legacy and not exists("events"):
+        raise UnmigratedDatabaseError(
+            f"{db_path} tiene {', '.join(legacy)} pero falta events: restaurar el backup previo"
+        )
+    if schema_sql is None:
+        return
+    reference = sqlite3.connect(":memory:")
+    try:
+        reference.executescript(schema_sql)
+        expected = {row[1] for row in reference.execute("PRAGMA table_info(events)")}
+    finally:
+        reference.close()
+    actual = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    if actual and expected - actual:
+        raise UnmigratedDatabaseError(
+            f"{db_path} tiene una tabla events con otra forma "
+            f"(faltan {sorted(expected - actual)}); restaurar o migrar a mano"
+        )
+
+
 def init_database(config: dict | None = None, base_dir: Path | None = None) -> str:
     """
     Crea la base de datos si no existe y aplica el schema.
-    Ejecuta each statement individually to tolerate migration errors
-    (e.g. source table doesn't exist in fresh DBs).
+    Ejecuta cada sentencia por separado y tolera errores de migración.
+
+    Antes de crear nada, se niega a seguir sobre una base con el esquema
+    anterior (`noise_events`/`vehicle_passages`): hay que migrarla primero.
     Retorna la ruta a la base de datos.
     """
     if config is None:
@@ -343,6 +395,11 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
             schema_sql = f.read()
 
         conn = sqlite3.connect(str(db_path), timeout=10)
+        try:
+            _check_unified(conn, db_path, None)
+        except UnmigratedDatabaseError:
+            conn.close()
+            raise
         # WAL: un lector largo (export CSV en streaming) no bloquea a los
         # writers de captura/eventos. Es persistente para esta base.
         try:
@@ -364,7 +421,10 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
             except sqlite3.OperationalError:
                 pass  # tolerate migration errors
         conn.commit()
-        conn.close()
+        try:
+            _check_unified(conn, db_path, schema_sql)
+        finally:
+            conn.close()
 
     return str(db_path)
 

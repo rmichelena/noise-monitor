@@ -21,7 +21,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 from src.acoustic_analysis import ClipAnalyzer, validate_calibration  # noqa: E402
 from src.analysis_evaluation import summarize  # noqa: E402
 from src.analysis_store import (  # noqa: E402
-    SCHEMA, UNIFIED, event_table, finish_attempt, pending_events, start_attempt, visual_context,
+    SCHEMA, event_table, finish_attempt, pending_events, start_attempt, visual_context,
 )
 from src.utils import load_config, resolve_path  # noqa: E402
 
@@ -90,16 +90,11 @@ def parse_local_time(value: str) -> datetime:
     return result
 
 
-def calibration_for(event, table: str, calibration: dict | None, pre: float, post: float) -> dict | None:
+def calibration_for(event, calibration: dict | None) -> dict | None:
     if calibration is None:
         return None
-    if table == UNIFIED:
-        left = datetime.fromtimestamp(event["start_ts"])
-        right = datetime.fromtimestamp(event["end_ts"])
-    else:
-        timestamp = parse_local_time(event["timestamp"])
-        left = timestamp - timedelta(seconds=pre)
-        right = timestamp + timedelta(seconds=post + 1)
+    left = datetime.fromtimestamp(event["start_ts"])
+    right = datetime.fromtimestamp(event["end_ts"])
     if parse_local_time(calibration["valid_from"]) <= left and right <= parse_local_time(calibration["valid_until"]):
         return calibration
     return None
@@ -112,6 +107,8 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
     buffer = config["buffer"]
     pre, post = float(buffer["pre_event_seconds"]), float(buffer["post_event_seconds"])
     since = parse_local_time(args.since).isoformat(timespec="seconds") if args.since else ""
+    # Las claves legacy_* ya no ajustan ventanas, pero forman parte del hash
+    # del perfil: quitarlas invalidaría los análisis guardados.
     profile_config = {
         "name": args.profile, "algorithm": analyzer.parameters, "calibration": calibration,
         "legacy_pre_s": pre, "legacy_post_s": post, "settle_s": args.settle_seconds,
@@ -121,9 +118,9 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with closing(sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True, timeout=5)) as conn:
             conn.row_factory = sqlite3.Row
-            table = event_table(conn, args.event_table)
+            table = event_table(conn)
             if table is None:
-                raise ValueError("la base seleccionada no tiene un esquema de eventos reconocido")
+                raise ValueError("la base no tiene la tabla events: correr scripts/migrate_unified.py")
             conn.executescript(SCHEMA)
             if args.retry_failed:
                 with conn:
@@ -139,23 +136,16 @@ def run_worker(analyzer: ClipAnalyzer, args, config: dict) -> None:
                 for event in events:
                     job = start_attempt(conn, table, event, profile, args.profile)
                     try:
-                        if table == UNIFIED:
-                            origin = (
-                                event["peak_ts"]
-                                if "peak_ts" in event.keys() and event["peak_ts"] is not None
-                                else event["end_ts"]
-                            )
-                        else:
-                            origin = parse_local_time(event["timestamp"]).timestamp()
+                        origin = event["peak_ts"] if event["peak_ts"] is not None else event["end_ts"]
                         event_to_analysis_ms = max(0, round((time() - origin) * 1000))
                         stored = event["clip_path"] or ""
                         path = (PROJECT_DIR / stored).resolve()
                         muted = bool(event["audio_muted"])
                         if not muted and clips not in path.parents:
                             raise ValueError("clip fuera del directorio configurado")
-                        visual, confirmed = visual_context(conn, table, event, pre, post)
+                        visual, confirmed = visual_context(conn, table, event)
                         result = analyzer.analyze(
-                            path, calibration=calibration_for(event, table, calibration, pre, post),
+                            path, calibration=calibration_for(event, calibration),
                             visual_labels=visual, visual_vehicle_confirmed=confirmed, audio_muted=muted,
                         )
                         result["clip_path"] = stored
@@ -185,7 +175,6 @@ def main() -> int:
     offline.add_argument("--csv", type=Path, required=True)
     offline.add_argument("--summary", type=Path)
     worker = commands.add_parser("worker", help="procesar un lote desde SQLite")
-    worker.add_argument("--event-table", choices=("noise_events", "events"), help="esquema de eventos explícito")
     worker.add_argument("--watch", action="store_true", help="seguir buscando eventos")
     worker.add_argument("--since", help="fecha ISO local mínima, para limitar reprocesamiento")
     worker.add_argument("--limit", type=int, default=4, help="máximo de eventos por lote")

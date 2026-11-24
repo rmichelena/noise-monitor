@@ -51,11 +51,37 @@ def tmpdir() -> tempfile.TemporaryDirectory:
     return tempfile.TemporaryDirectory()
 
 
-def create_events_table(db_path: str | Path) -> None:
-    """Crea `events` con el DDL de la migración.
+LEGACY_SCHEMA = PROJECT_DIR / "tests" / "fixtures" / "schema_v2.sql"
 
-    Hasta el cutover la tabla no vive en schema.sql (init_database no la crea):
-    se reusa el esquema de scripts/migrate_unified.py en vez de duplicarlo.
+
+def create_legacy_schema(db_path: str | Path) -> None:
+    """Crea el esquema anterior a `events` (schema.sql de d757f4c, congelado).
+
+    Es la entrada de la migración. Se aplica como lo hacía init_database
+    entonces: sentencia por sentencia, tolerando los ALTER ya aplicados.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for statement in LEGACY_SCHEMA.read_text(encoding="utf-8").split(";"):
+            if not any(l.strip() and not l.strip().startswith("--")
+                       for l in statement.splitlines()):
+                continue
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_events_table(db_path: str | Path) -> None:
+    """Crea `events` con el DDL de la migración (idempotente).
+
+    init_database ya la crea desde schema.sql; los tests que no pasan por
+    init_database usan este helper.
     """
     import sqlite3
 

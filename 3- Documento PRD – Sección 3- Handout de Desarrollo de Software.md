@@ -49,8 +49,8 @@ Mic ─────────┼─▶│ sounddevice    │                  
              │         ▼                                 │
              │  ┌────────────────────────────────┐       │
              │  │ Event Manager (2 colas)        │       │
-             │  │ passage_queue → vehicle_passages│       │
-             │  │ trigger_queue → noise_events   │──┐    │
+             │  │ passage_queue → events traffic │       │
+             │  │ trigger_queue → events noise/both│─┐   │
              │  │ + correlación cruzada          │  │    │
              │  └──────┬─────────────────────────┘  │    │
              │         │                            │    │
@@ -164,7 +164,7 @@ noise-monitor/
 │   ├── yamnet.tflite          # Clasificador de audio (521 clases AudioSet)
 │   └── yamnet_labels.txt
 ├── data/
-│   ├── events.db            # SQLite (tablas: vehicle_passages + noise_events)
+│   ├── events.db            # SQLite (tabla única events)
 │   └── clips/               # Videos de eventos
 └── reports/                 # PDFs/HTMLs generados
 ```
@@ -173,45 +173,9 @@ noise-monitor/
 
 ### 3. Esquema de Base de Datos (schema.sql)
 
-El sistema usa dos tablas: `vehicle_passages` registra **todos** los vehículos detectados por el tracker (independientemente del ruido), y `noise_events` registra los eventos de ruido con clip y clasificación YAMNet. Ambas se cruzan opcionalmente vía FK.
+El sistema usa una sola tabla, `events`, con un clip por fila. `kind` distingue el origen: `traffic` es un pasaje del tracker sin disparo acústico, `noise` un disparo sin pasaje correlacionado y `both` un disparo correlacionado con un pasaje (un solo clip que cubre la unión de las dos ventanas). `start_ts`/`end_ts` guardan la ventana en epoch y `peak_ts` el instante del disparo. El DDL vigente está en `schema.sql` y debe coincidir con `EVENTS_DDL` de `scripts/migrate_unified.py` (lo verifica `tests/test_schema_cutover.py`).
 
-```sql
--- Registro continuo de vehículos detectados por el CentroidTracker
-CREATE TABLE IF NOT EXISTS vehicle_passages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601 del momento en que el vehículo entró al cuadro
-    timestamp_exit TEXT,               -- ISO 8601 cuando salió del cuadro
-    vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
-    lane TEXT,                         -- 'left', 'right'
-    detection_score REAL,              -- Score promedio del modelo durante el tracking
-    db_at_time REAL,                   -- dB(A) al momento de la detección
-    noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (noise_event_id) REFERENCES noise_events(id)
-);
-
--- Eventos de ruido (vehiculares y no vehiculares) con clip de audio/video
-CREATE TABLE IF NOT EXISTS noise_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601
-    db_max REAL NOT NULL,              -- Nivel máximo ponderado A
-    db_avg REAL,                       -- Nivel promedio en ventana
-    trigger_type TEXT,                 -- 'peak', 'sustained'
-    sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
-    sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
-    sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
-    vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
-    lane TEXT,                         -- 'left', 'right', 'both', 'none'
-    confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
-    passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
-    clip_path TEXT,                    -- Ruta relativa al clip
-    duration_ms INTEGER,               -- Duración del clip en ms
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
-);
-```
-
-**Nota sobre migración:** Si existía la tabla `events` (v1), `schema.sql` incluye un `INSERT OR IGNORE` para migrar datos a `noise_events`.
+**Nota sobre migración:** las bases con el esquema anterior (`noise_events` + `vehicle_passages`, unidas por FK) se migran con `scripts/migrate_unified.py`, que deja las tablas viejas como `*_legacy`. `init_database` se niega a arrancar sobre una base sin migrar.
 
 ---
 
@@ -346,8 +310,8 @@ from queue import Queue
 # VideoMonitor: captura video, inferencia Edge TPU cada N frames
 #               CentroidTracker actualiza en cada inferencia → passage_queue
 # EventManager: consume 2 colas en paralelo:
-#   - passage_queue → INSERT en vehicle_passages (registro continuo)
-#   - trigger_queue → INSERT en noise_events + guardar clip + correlacionar
+#   - passage_queue → INSERT en events, kind='traffic' (registro continuo)
+#   - trigger_queue → correlacionar: UPDATE del pasaje a 'both' o INSERT 'noise' + clip
 
 # --- FLUJO DE DATOS ---
 # 1. VideoMonitor captura frames y corre inferencia cada N frames
@@ -358,8 +322,8 @@ from queue import Queue
 #    - Si no: descartado (flickering o vehículo estacionado)
 # 4. AudioMonitor detecta triggers (peak/sustained)
 # 5. Si trigger: clasifica ~1s de audio con YAMNet → encola en trigger_queue
-# 6. EventManager._passage_loop() → consume passage_queue → vehicle_passages
-# 7. EventManager._trigger_loop() → consume trigger_queue → noise_events
+# 6. EventManager._passage_loop() → consume passage_queue → events (traffic)
+# 7. EventManager._trigger_loop() → consume trigger_queue → events (noise o both)
 #    - Si vehicular: busca passage reciente del mismo tipo para correlacionar
 #    - Guarda clip ±5s de buffers de audio y video
 

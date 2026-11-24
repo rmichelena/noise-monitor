@@ -30,8 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import migrate_unified  # noqa: E402
 from migrate_unified import MigrationError, migrate  # noqa: E402
-from support import example_config  # noqa: E402
-from src.utils import init_database, resolve_path  # noqa: E402
+from support import create_legacy_schema, example_config  # noqa: E402
+from src.utils import resolve_path  # noqa: E402
 
 PRE, POST = 5.0, 10.0
 
@@ -54,7 +54,8 @@ class MigrationFixture(unittest.TestCase):
         self.cfg["buffer"]["pre_event_seconds"] = PRE
         self.cfg["buffer"]["post_event_seconds"] = POST
         self.db = resolve_path(self.cfg, "database", PROJECT_DIR)
-        init_database(self.cfg, PROJECT_DIR)
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        create_legacy_schema(self.db)
         self.conn = sqlite3.connect(str(self.db))
         self.conn.row_factory = sqlite3.Row
 

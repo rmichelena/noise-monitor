@@ -9,12 +9,12 @@ La calle frente al departamento presenta un efecto "cañón urbano" que amplific
 - Clasificar el tipo de sonido (vehículo, construcción, animal, alarma, etc.) usando un modelo de clasificación de audio (YAMNet).
 - Cuando el sonido es vehicular, identificar la clase del vehículo responsable usando visión por computadora en el borde, y correlacionar con el pasaje detectado por el tracker.
 - Registrar nivel sonoro (dB ponderación A) y, cuando sea posible, una estimación de velocidad.
-- Almacenar datos en una base de datos local con dos tablas: `vehicle_passages` (todos los vehículos) y `noise_events` (eventos ruidosos con clip y clasificación YAMNet). Generar reportes periódicos (CSV/PDF/HTML).
+- Almacenar datos en una base de datos local con una sola tabla `events`: cada fila es un pasaje (`traffic`), un evento ruidoso (`noise`) o un evento ruidoso correlacionado con un pasaje (`both`), con un clip y la clasificación YAMNet cuando hubo disparo. Generar reportes periódicos (CSV/PDF/HTML).
 - Producir clips de video/audio cortos autocontenidos que puedan enviarse como evidencia (incluyendo un "Top 10" de picos semanales como opción).
 - Proveer un dashboard web en red local para monitoreo en tiempo real (nivel de dB actual, conteo de vehículos, eventos recientes, clips, histogramas) y generación de reportes bajo demanda.
 
 *3. Alcance funcional*
-- *Tracking continuo de vehículos*: cada frame de inferencia alimenta un CentroidTracker que rastrea vehículos por centroides en coordenadas de píxel. Al salir del cuadro, se registra en `vehicle_passages` con clase, carril, score y dB del momento. Filtros anti-falsos: duración mínima de tracking (descarta flickering del modelo) y desplazamiento mínimo del centroide (descarta vehículos estacionados).
+- *Tracking continuo de vehículos*: cada frame de inferencia alimenta un CentroidTracker que rastrea vehículos por centroides en coordenadas de píxel. Al salir del cuadro, se registra en `events` (`kind='traffic'`) con clase, carril, score y dB del momento. Filtros anti-falsos: duración mínima de tracking (descarta flickering del modelo) y desplazamiento mínimo del centroide (descarta vehículos estacionados).
 - *Detección de ruido*: audio monitoreado en tiempo real para disparar eventos (pico instantáneo o persistencia).
 - *Buffer circular*: guarda ±5 s de video y audio para capturar el momento exacto del evento.
 - *Clasificación de sonido*: cada trigger pasa por YAMNet (521 clases AudioSet, modelo TFLite en CPU, input fijo 15600 samples @ 16kHz) que identifica el tipo de fuente. Las clases se agrupan en categorías: vehículo, construcción, animal, alarma/sirena, otro.
@@ -28,11 +28,11 @@ La calle frente al departamento presenta un efecto "cañón urbano" que amplific
 - *Flujo de datos*:
   1. Audio y video se almacenan en buffers circulares independientes.
   2. Cada N frames de video, el Edge TPU corre inferencia → detecciones se alimentan al CentroidTracker.
-  3. El tracker rastrea centroides en coordenadas de píxel. Cuando un vehículo "sale" del cuadro (no se ve durante max_disappeared frames): si duración >= min_track_seconds Y desplazamiento >= min_displacement → se registra en `vehicle_passages`. Si no pasa los filtros, se descarta (flickering o estacionado).
+  3. El tracker rastrea centroides en coordenadas de píxel. Cuando un vehículo "sale" del cuadro (no se ve durante max_disappeared frames): si duración >= min_track_seconds Y desplazamiento >= min_displacement → se registra en `events` como `traffic`. Si no pasa los filtros, se descarta (flickering o estacionado).
   4. El hilo de audio aplica ponderación A y evalúa dos condiciones de trigger: (a) pico >85 dB, (b) persistencia >70 dB durante 1.5 s.
   5. Al cumplirse una condición, se clasifica ~1s de audio con YAMNet → categoría (vehículo, construcción, animal, alarma, otro).
-  6a. Si categoría = vehículo: se busca correlación con un pasaje reciente del tracker (mismo tipo de vehículo). Se calcula la clase "culpable" por jerarquía de ruido y se registra en `noise_events` con FK al pasaje.
-  6b. Si categoría ≠ vehículo: se registra directamente en `noise_events` con la clase de sonido de YAMNet, sin correlación de video.
+  6a. Si categoría = vehículo: se busca correlación con un pasaje reciente del tracker (mismo tipo de vehículo). Se calcula la clase "culpable" por jerarquía de ruido y la fila del pasaje pasa a `both`, con un clip que cubre las dos ventanas.
+  6b. Si categoría ≠ vehículo: se registra en `events` como `noise` con la clase de sonido de YAMNet, sin correlación de video.
   7. En ambos casos se vuelca el clip ±5s y se inserta en SQLite.
   8. Un cron semanal ejecuta el generador de reportes y opcionalmente compone un MP4 con los 10 eventos más ruidosos usando `ffmpeg`.
 

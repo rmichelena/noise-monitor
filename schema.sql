@@ -1,75 +1,51 @@
--- Schema para el sistema de monitoreo de ruido urbano v2
+-- Schema para el sistema de monitoreo de ruido urbano v3
 -- Ejecutar: sqlite3 data/events.db < schema.sql
 --
--- Dos tablas principales:
---   vehicle_passages: registro continuo de cada vehículo que cruza el cuadro (tracker)
---   noise_events: eventos de ruido con clip (vehicular y no vehicular)
-
--- Registro continuo de vehículos detectados por el tracker
-CREATE TABLE IF NOT EXISTS vehicle_passages (
+-- Una sola tabla de eventos, un clip por fila:
+--   kind = 'traffic'  pasaje del tracker sin disparo acústico
+--   kind = 'noise'    disparo acústico sin pasaje correlacionado
+--   kind = 'both'     disparo acústico correlacionado con un pasaje
+--
+-- Las bases con noise_events/vehicle_passages se migran con
+-- scripts/migrate_unified.py, que las deja como *_legacy. init_database se
+-- niega a arrancar sobre una base sin migrar.
+--
+-- Este DDL debe coincidir con EVENTS_DDL de scripts/migrate_unified.py
+-- (tests/test_schema_cutover.py lo verifica).
+CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601 del momento en que el vehículo entró al cuadro
-    timestamp_exit TEXT,               -- ISO 8601 cuando salió del cuadro
-    vehicle_class TEXT NOT NULL,       -- 'car', 'truck', 'bus', 'motorcycle', 'bicycle'
-    lane TEXT,                         -- mitad de imagen: 'left', 'right'
-    direction TEXT,                    -- sentido real: 'ltr' o 'rtl'
-    speed_kmh REAL,                    -- velocidad media estimada por píxeles
-    detection_score REAL,              -- Score promedio del modelo durante el tracking
-    db_at_time REAL,                   -- dB(A) al momento de la detección
-    clip_path TEXT,                    -- clip del pasaje (vehículos en movimiento)
-    pinned INTEGER DEFAULT 0,          -- 1 si el dueño lo marcó
+    kind TEXT NOT NULL CHECK (kind IN ('traffic', 'noise', 'both')),
+    timestamp TEXT NOT NULL,          -- ISO 8601 local, orden y filtros
+    start_ts REAL NOT NULL,           -- epoch: ventana del evento
+    end_ts REAL NOT NULL,
+    peak_ts REAL,                     -- epoch del trigger de audio, si lo hubo
+    db_max REAL,
+    db_avg REAL,
+    trigger_type TEXT,
+    sound_class TEXT,
+    sound_category TEXT,
+    sound_confidence REAL,
+    sound_labels_json TEXT,
+    vehicle_class TEXT,
+    direction TEXT,
+    lane TEXT,
+    speed_kmh REAL,
+    detection_score REAL,
+    track_id INTEGER,
+    confidence TEXT,
+    audio_muted INTEGER DEFAULT 0,
+    duration_ms INTEGER,
+    clip_path TEXT,
+    pinned INTEGER DEFAULT 0,
     pinned_at TEXT,
-    noise_event_id INTEGER,            -- FK a noise_events si este vehículo generó un evento ruidoso
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (noise_event_id) REFERENCES noise_events(id)
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
-
--- Eventos de ruido (vehiculares y no vehiculares) con clip de audio/video
-CREATE TABLE IF NOT EXISTS noise_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,           -- ISO 8601
-    db_max REAL NOT NULL,              -- Nivel máximo ponderado A
-    db_avg REAL,                       -- Promedio energético dB(A) en ventana (excluye silencio digital)
-    trigger_type TEXT,                 -- 'peak', 'sustained'
-    sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
-    sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'
-    sound_confidence REAL,             -- Score de YAMNet (0.0-1.0)
-    sound_labels_json TEXT,            -- Hasta tres etiquetas YAMNet ordenadas por score
-    vehicle_class TEXT,                -- Solo si vehicular: 'motorcycle', 'car', 'truck', 'bus', 'unknown'
-    lane TEXT,                         -- 'left', 'right', 'both', 'none'
-    confidence TEXT,                   -- 'high', 'medium', 'low' (confianza en atribución visual)
-    passage_id INTEGER,                -- FK a vehicle_passages si se correlacionó con un vehículo
-    clip_path TEXT,                    -- Ruta relativa al clip
-    audio_muted INTEGER DEFAULT 0,      -- 1 si se eliminó el audio (voz)
-    pinned INTEGER DEFAULT 0,           -- 1 si el dueño lo marcó como interesante
-    pinned_at TEXT,
-    duration_ms INTEGER,               -- Duración del clip en ms
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (passage_id) REFERENCES vehicle_passages(id)
-);
-
--- Migración para bases existentes (falla en silencio si ya existe)
-ALTER TABLE vehicle_passages ADD COLUMN direction TEXT;
-ALTER TABLE vehicle_passages ADD COLUMN speed_kmh REAL;
-ALTER TABLE vehicle_passages ADD COLUMN clip_path TEXT;
-ALTER TABLE vehicle_passages ADD COLUMN pinned INTEGER DEFAULT 0;
-ALTER TABLE vehicle_passages ADD COLUMN pinned_at TEXT;
-ALTER TABLE noise_events ADD COLUMN audio_muted INTEGER DEFAULT 0;
-ALTER TABLE noise_events ADD COLUMN pinned INTEGER DEFAULT 0;
-ALTER TABLE noise_events ADD COLUMN pinned_at TEXT;
-ALTER TABLE noise_events ADD COLUMN sound_labels_json TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_vp_timestamp ON vehicle_passages(timestamp);
-CREATE INDEX IF NOT EXISTS idx_vp_class ON vehicle_passages(vehicle_class);
-CREATE INDEX IF NOT EXISTS idx_ne_timestamp ON noise_events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_ne_sound_category ON noise_events(sound_category);
-CREATE INDEX IF NOT EXISTS idx_ne_vehicle_class ON noise_events(vehicle_class);
-CREATE INDEX IF NOT EXISTS idx_ne_db ON noise_events(db_max);
-
--- Migrar datos de la tabla vieja si existe
-INSERT OR IGNORE INTO noise_events (id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms)
-    SELECT id, timestamp, db_max, db_avg, trigger_type, vehicle_class, lane, confidence, clip_path, duration_ms
-    FROM events WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='events');
+CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+CREATE INDEX IF NOT EXISTS idx_events_vehicle ON events(vehicle_class);
+CREATE INDEX IF NOT EXISTS idx_events_db ON events(db_max);
+CREATE INDEX IF NOT EXISTS idx_events_pinned ON events(pinned);
+CREATE INDEX IF NOT EXISTS idx_events_sound_category ON events(sound_category);
 
 -- Nivel de fondo por minuto: permite calibrar umbrales con datos reales
 -- sin depender de clips (que solo existen cuando ya se disparó un evento).
