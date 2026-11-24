@@ -98,7 +98,9 @@ class CaptureRankingTests(unittest.TestCase):
                 manager._process_trigger({"type": "peak", "db": 90, "timestamp": stamp})
                 manager._process_trigger({"type": "peak", "db": 90, "timestamp": stamp + .1})
 
-            self.assertEqual(classifier.predict_scores.call_count, 3)
+            # 3 ventanas de etiquetas alrededor del disparo + 3 más que sólo
+            # buscan voz en el resto del clip (dBA escanea todo desde S1 R3).
+            self.assertEqual(classifier.predict_scores.call_count, 6)
             with sqlite3.connect(db_path) as conn:
                 row, = conn.execute("SELECT sound_class,sound_category,sound_labels_json FROM events")
             self.assertEqual(row[:2], ("Car", "vehicle"))

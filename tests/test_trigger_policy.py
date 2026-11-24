@@ -644,6 +644,41 @@ class PassageGatingTest(unittest.TestCase):
         self.assertEqual(list(em.clips_dir.glob("event_*.mp4")), [], "fallback huérfano")
         self.assertTrue(any(f"#{row['id']} sin clip unión" in m for m in logs.output), logs.output)
 
+    def dba_noise_without_passage(self, em):
+        """Disparo dBA real: sin `sound_class` (audio_monitor no lo trae), con
+        `classify_event_clip` real sobre el clasificador del test."""
+        em.audio_monitor.sample_rate = em.config["audio"]["sample_rate"]
+        em.audio_monitor.classify_event_clip = types.MethodType(
+            AudioMonitor.classify_event_clip, em.audio_monitor)
+        em._process_trigger({"type": "peak", "db": 90.0, "timestamp": self.base + 10.0})
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "noise")
+        return row
+
+    def test_dba_noise_scans_the_whole_clip_for_voice(self):
+        # Voz en [8.0, 8.5]: fuera de ±0,97 s del pico (10 s) y de las tres
+        # ventanas de etiquetas; sólo la ve el escaneo de todo el clip.
+        em = self.manager_16k({})
+        clf = self.with_real_classifier(em, voice_between=(8.0, 8.5))
+        row = self.dba_noise_without_passage(em)
+        self.assertEqual(row["audio_muted"], 1)
+        self.assertTrue(self.clip_calls[0]["mute"])
+        self.assertEqual(row["sound_class"], "Car", "las etiquetas salen de las ventanas del disparo")
+        self.assertGreater(clf.inference_count, 3)
+
+    def test_dba_noise_without_voice_keeps_audio(self):
+        em = self.manager_16k({})
+        self.with_real_classifier(em)
+        row = self.dba_noise_without_passage(em)
+        self.assertEqual(row["audio_muted"], 0)
+
+    def test_dba_noise_without_classifier_is_not_muted(self):
+        # Sin YAMNet, sólo el psicoacústico va mudo (comportamiento previo).
+        em = self.manager_16k({})
+        em.audio_monitor._classifier = None
+        row = self.dba_noise_without_passage(em)
+        self.assertEqual(row["audio_muted"], 0)
+
     # -- Fallos de la rama `both` nacida en memoria (M3) ------------------
     def test_memory_passage_union_failure_keeps_noise_and_releases_passage(self):
         em = self.manager({"traffic_enabled": False})

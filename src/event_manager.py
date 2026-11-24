@@ -767,7 +767,12 @@ class EventManager:
 
         if perceptual or sound_class is None:
             sound_class, sound_category, sound_confidence, speech, sound_labels = (
-                self.audio_monitor.classify_event_clip(audio_list, timestamp, scan_all_speech=perceptual)
+                # La voz se busca en todo el clip también en dBA: las etiquetas
+                # siguen saliendo de las ventanas del disparo. Sin YAMNet, sólo
+                # el psicoacústico va mudo (como antes).
+                self.audio_monitor.classify_event_clip(
+                    audio_list, timestamp, scan_all_speech=True, mute_unclassified=perceptual,
+                )
             )
             mute_audio |= speech
 

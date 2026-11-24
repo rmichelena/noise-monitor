@@ -302,15 +302,23 @@ class AudioMonitor:
                     logger.warning("Cola de eventos llena; se descartó un disparo dBA")
                     self._event_queue_warned = True
 
-    def classify_event_clip(self, blocks, timestamp: float, *, scan_all_speech: bool):
-        """Clasifica el audio del evento a partir de la ventana ya capturada."""
+    def classify_event_clip(
+        self, blocks, timestamp: float, *, scan_all_speech: bool, mute_unclassified: bool | None = None,
+    ):
+        """Clasifica el audio del evento a partir de la ventana ya capturada.
+
+        `mute_unclassified` (por defecto = `scan_all_speech`): si el clip va
+        mudo cuando no hay clasificador o no hay audio.
+        """
+        if mute_unclassified is None:
+            mute_unclassified = scan_all_speech
         if self._classifier is None or not blocks:
-            if scan_all_speech and self._classifier is None and not getattr(self, "_no_classifier_warned", False):
+            if mute_unclassified and self._classifier is None and not getattr(self, "_no_classifier_warned", False):
                 logger.warning(
                     "Sin clasificador YAMNet: los clips psicoacústicos se guardan sin audio"
                 )
                 self._no_classifier_warned = True
-            return None, "other", None, scan_all_speech, []
+            return None, "other", None, mute_unclassified, []
 
         # Los timestamps marcan el final de cada bloque. Traducir el disparo
         # a una muestra del clip mantiene el ancla aunque falte pre-roll.
