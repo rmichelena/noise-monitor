@@ -207,6 +207,15 @@ class VideoMonitor:
         with self._overlay_lock:
             return self._overlay_jpeg
 
+    def latest_frame_jpeg(self) -> bytes | None:
+        """Frame reciente sin anotaciones, para el editor de geometría de ajustes."""
+        with self._lock:
+            if not self.video_buffer:
+                return None
+            frame = self.video_buffer[-1][1].copy()
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        return encoded.tobytes() if ok else None
+
     def _update_overlay(self, frame: np.ndarray, detections: list[dict]):
         """Dibuja cajas y etiquetas y guarda el frame como JPEG."""
         img = frame.copy()

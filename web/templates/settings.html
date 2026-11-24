@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% block title %}Noise Monitor — ajustes{% endblock %}
+
+{% block content %}
+<style>
+  .settings-grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
+  .field { display:grid; gap:6px; align-content:start; }
+  .field > span { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  .field input[type=text], .field input[type=number], .field select {
+    width:100%; background:#0e1318; color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:8px 9px; font:inherit;
+  }
+  .field input[type=checkbox] { accent-color:var(--accent); }
+  .rect, .size { display:flex; gap:6px; }
+  .rect input, .size input { min-width:0; }
+  .checks { display:flex; gap:12px; flex-wrap:wrap; }
+  .checks label { display:flex; gap:5px; align-items:center; font-size:13px; }
+  .actions { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .actions button { background:var(--accent); color:#04121c; border:0; border-radius:8px;
+                    padding:9px 16px; font:inherit; font-weight:600; cursor:pointer; }
+  .actions button.secondary { background:none; color:var(--accent); border:1px solid var(--line); }
+  #settings-msg { font-size:13px; color:var(--dim); }
+  #settings-msg.err { color:var(--bad); }
+  #settings-msg.ok { color:#5ad67d; }
+  #editor-wrap { display:grid; gap:10px; }
+  #editor { width:100%; max-width:900px; background:#000; border-radius:8px; touch-action:none; cursor:crosshair; }
+  .editor-buttons { display:flex; gap:8px; flex-wrap:wrap; }
+  .editor-buttons button { background:#1b232b; color:var(--fg); border:1px solid var(--line);
+                           border-radius:7px; padding:6px 10px; font:inherit; cursor:pointer; }
+  .editor-buttons button.active { border-color:var(--accent); color:var(--accent); }
+  .hint { color:var(--dim); font-size:12px; }
+  .field input[type=time] { background:#0e1318; color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:7px 9px; font:inherit; }
+  .group { border:1px solid var(--line); border-radius:10px; padding:4px 14px 14px; margin:16px 0; }
+  .group > h3 { font-size:13px; color:var(--accent); margin:14px 0 10px; display:flex; gap:10px; align-items:center; }
+  .group-toggle { display:flex; gap:8px; align-items:center; color:var(--fg); text-transform:none;
+                  letter-spacing:0; font-size:13px; margin-left:auto; }
+  .group.off .settings-grid { opacity:.45; }
+  .field.wide { grid-column:1 / -1; }
+  .field .hint { text-transform:none; letter-spacing:0; }
+  #settings-errors { color:var(--bad); font-size:13px; white-space:pre-wrap; }
+</style>
+
+<section>
+  <h2>Geometría sobre el video</h2>
+  <div id="editor-wrap">
+    <div class="editor-buttons">
+      <button type="button" data-mode="roi">ROI de inferencia</button>
+      <button type="button" data-mode="filter">Filtro de calzada</button>
+      <button type="button" data-mode="speed-left">Punto A de velocidad</button>
+      <button type="button" data-mode="speed-right">Punto B de velocidad</button>
+      <button type="button" data-mode="none">Solo ver</button>
+    </div>
+    <canvas id="editor" width="1280" height="720"></canvas>
+    <div class="hint" id="editor-hint">Elegí un modo y arrastrá sobre la imagen (los puntos se colocan con un clic).</div>
+  </div>
+</section>
+
+<section>
+  <h2>Ajustes</h2>
+  <form id="settings-form">
+    {% for group in payload["groups"] %}
+    {% set toggle = group.get("toggle") %}
+    <div class="group {% if toggle and not payload['values'][toggle] %}off{% endif %}" data-group="{{ group.key }}"
+         {% if toggle %}data-toggle="{{ toggle }}"{% endif %}>
+    <h3>{{ group.title }}
+      {% if toggle %}
+      <label class="group-toggle">
+        <input type="checkbox" data-path="{{ toggle }}" {% if payload["values"][toggle] %}checked{% endif %}>
+        {% for f in group.fields if f.path == toggle %}{{ f.label }}{% endfor %}
+      </label>
+      {% endif %}
+    </h3>
+    <div class="settings-grid">
+      {% for f in group.fields if f.path != toggle %}
+      {% set value = payload["values"][f.path] %}
+      <label class="field {% if f.type in ('days', 'class_groups') %}wide{% endif %}" data-field-type="{{ f.type }}">
+        <span>{{ f.label }}{% if f.unit %} · {{ f.unit }}{% endif %}</span>
+        {% if f.type == "select" %}
+          <select data-path="{{ f.path }}">
+            {% for optval, optlabel in f.options %}
+            <option value="{{ optval }}" {% if value == optval %}selected{% endif %}>{{ optlabel }}</option>
+            {% endfor %}
+          </select>
+        {% elif f.type == "boolean" %}
+          <input type="checkbox" data-path="{{ f.path }}" {% if value %}checked{% endif %}>
+        {% elif f.type == "time" %}
+          <input type="time" step="60" data-path="{{ f.path }}" value="{{ value or '' }}">
+        {% elif f.type == "days" %}
+          <span class="checks">
+            {% for num, name in payload["days"] %}
+            <label><input type="checkbox" data-path="{{ f.path }}" value="{{ num }}"
+              {% if value and num in value %}checked{% endif %}> {{ name }}</label>
+            {% endfor %}
+          </span>
+        {% elif f.type == "class_groups" %}
+          <span class="checks">
+            {% for g in payload["class_groups"] %}
+            {% set on = value and (g.classes | select("in", value) | list | length) == (g.classes | length) %}
+            {% set partial = value and not on and (g.classes | select("in", value) | list | length) > 0 %}
+            <label title="{{ g.classes | join(', ') }}"><input type="checkbox" data-path="{{ f.path }}"
+              data-classes="{{ g.classes | join(',') }}" {% if on %}checked{% endif %}
+              {% if partial %}data-partial="1"{% endif %}> {{ g.label }}</label>
+            {% endfor %}
+          </span>
+        {% elif f.type in ("rect", "size") %}
+          <span class="{{ f.type }}">
+            {% set count = 4 if f.type == "rect" else 2 %}
+            {% for i in range(count) %}
+            <input type="number" step="1" data-path="{{ f.path }}" data-index="{{ i }}"
+                   placeholder="{{ ['x1','y1','x2','y2'][i] if f.type == 'rect' else ['ancho','alto'][i] }}"
+                   value="{{ value[i] if value and value|length > i else '' }}">
+            {% endfor %}
+          </span>
+        {% elif f.type == "integer" %}
+          <input type="number" step="1" data-path="{{ f.path }}" value="{{ value if value is not none else '' }}"
+                 {% if f.min is defined %}min="{{ f.min }}"{% endif %}{% if f.max is defined %}max="{{ f.max }}"{% endif %}>
+        {% elif f.type == "number" %}
+          <input type="number" step="{{ f.step|default('0.1') }}" data-path="{{ f.path }}"
+                 value="{{ value if value is not none else '' }}"
+                 {% if f.min is defined %}min="{{ f.min }}"{% endif %}{% if f.max is defined %}max="{{ f.max }}"{% endif %}>
+        {% else %}
+          <input type="text" data-path="{{ f.path }}" value="{{ value if value is not none else '' }}">
+        {% endif %}
+        {% if f.hint %}<span class="hint">{{ f.hint }}</span>{% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    </div>
+    {% endfor %}
+    <div class="actions" style="margin-top:22px">
+      <button type="submit">Guardar ajustes</button>
+      <button type="button" class="secondary" id="settings-reload">Descartar cambios</button>
+      <span id="settings-msg"></span>
+    </div>
+    <div id="settings-errors"></div>
+    <p class="hint">Los cambios se guardan en <code>config.yaml</code> (con backup <code>.bak</code>) y se aplican al reiniciar el servicio. La cámara y el detector actuales se usan solo para dibujar la geometría.</p>
+  </form>
+</section>
+
+<script>
+const PAYLOAD = {{ payload|tojson }};
+const FIELDS = PAYLOAD.groups.flatMap(g => g.fields);
+const canvas = document.getElementById('editor');
+const ctx = canvas.getContext('2d');
+const msg = document.getElementById('settings-msg');
+const errors = document.getElementById('settings-errors');
+const hint = document.getElementById('editor-hint');
+let image = null;
+let mode = 'none';
+let drag = null;
+let roi = getArray('video.detection_roi');
+let filter = getArray('video.detection_filter');
+let speedLeft = getNumber('speed.reference_left_x');
+let speedRight = getNumber('speed.reference_right_x');
+
+function getInputs(path) { return [...document.querySelectorAll(`[data-path="${CSS.escape(path)}"]`)]; }
+function getArray(path) {
+  const inputs = getInputs(path).sort((a,b) => (+a.dataset.index) - (+b.dataset.index));
+  return inputs.map(i => Number(i.value)).filter(Number.isFinite);
+}
+function getNumber(path) {
+  const el = getInputs(path)[0];
+  return el ? Number(el.value) : NaN;
+}
+function setArray(path, values) {
+  const inputs = getInputs(path).sort((a,b) => (+a.dataset.index) - (+b.dataset.index));
+  inputs.forEach((el, i) => { if (values[i] !== undefined) el.value = Math.round(values[i]); });
+}
+function setNumber(path, value) {
+  const el = getInputs(path)[0];
+  if (el && Number.isFinite(value)) el.value = Math.round(value);
+}
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (image) ctx.drawImage(image, 0, 0, w, h);
+  else { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h); }
+  const rect = (arr, color, label) => {
+    if (arr.length !== 4) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    ctx.strokeRect(arr[0], arr[1], arr[2]-arr[0], arr[3]-arr[1]);
+    ctx.fillStyle = color; ctx.font = 'bold 18px system-ui';
+    ctx.fillText(label, arr[0] + 6, arr[1] + 22);
+  };
+  rect(roi, '#5ad67d', 'ROI');
+  rect(filter, '#ffb020', 'FILTRO');
+  const line = (x, color, label) => {
+    if (!Number.isFinite(x)) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillStyle = color; ctx.font = 'bold 18px system-ui';
+    ctx.fillText(label, Math.min(w - 80, x + 5), h - 12);
+  }
+  line(speedLeft, '#4cc2ff', 'A');
+  line(speedRight, '#4cc2ff', 'B');
+  if (drag && drag.rect) {
+    ctx.setLineDash([8, 6]); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    const [x1,y1,x2,y2] = drag.rect;
+    ctx.strokeRect(x1, y1, x2-x1, y2-y1); ctx.setLineDash([]);
+  }
+}
+
+function point(ev) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(canvas.width, (ev.clientX - r.left) * canvas.width / r.width)),
+    y: Math.max(0, Math.min(canvas.height, (ev.clientY - r.top) * canvas.height / r.height)),
+  };
+}
+
+canvas.addEventListener('pointerdown', ev => {
+  const p = point(ev);
+  if (mode === 'roi' || mode === 'filter') {
+    drag = { start: p, rect: [p.x, p.y, p.x, p.y] };
+    canvas.setPointerCapture(ev.pointerId);
+    draw();
+  } else if (mode === 'speed-left' || mode === 'speed-right') {
+    if (mode === 'speed-left') { speedLeft = p.x; setNumber('speed.reference_left_x', p.x); }
+    else { speedRight = p.x; setNumber('speed.reference_right_x', p.x); }
+    draw();
+  }
+});
+canvas.addEventListener('pointermove', ev => {
+  if (!drag) return;
+  const p = point(ev), s = drag.start;
+  drag.rect = [Math.min(s.x, p.x), Math.min(s.y, p.y), Math.max(s.x, p.x), Math.max(s.y, p.y)];
+  draw();
+});
+canvas.addEventListener('pointerup', ev => {
+  if (!drag) return;
+  const [x1,y1,x2,y2] = drag.rect;
+  if (x2 - x1 >= 4 && y2 - y1 >= 4) {
+    if (mode === 'roi') { roi = [x1,y1,x2,y2]; setArray('video.detection_roi', roi); }
+    if (mode === 'filter') { filter = [x1,y1,x2,y2]; setArray('video.detection_filter', filter); }
+  }
+  drag = null;
+  draw();
+});
+
+document.querySelectorAll('[data-mode]').forEach(btn => btn.addEventListener('click', () => {
+  mode = btn.dataset.mode;
+  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b === btn));
+  hint.textContent = mode === 'none' ? 'Solo visualización.' :
+    mode.startsWith('speed') ? 'Hacé clic para colocar el punto de velocidad.' :
+    'Arrastrá para dibujar el rectángulo; se ajusta al video.';
+}));
+document.querySelectorAll('[data-path]').forEach(el => el.addEventListener('change', () => {
+  roi = getArray('video.detection_roi');
+  filter = getArray('video.detection_filter');
+  speedLeft = getNumber('speed.reference_left_x');
+  speedRight = getNumber('speed.reference_right_x');
+  draw();
+}));
+
+async function loadSnapshot() {
+  try {
+    const r = await fetch('/api/settings/snapshot', {cache:'no-store'});
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    image = new Image();
+    image.onload = () => { URL.revokeObjectURL(url); draw(); };
+    image.src = url;
+  } catch (e) {
+    hint.textContent = 'Sin frame de cámara para dibujar: ' + e.message;
+    draw();
+  }
+}
+
+function collect() {
+  const values = {};
+  for (const f of FIELDS) {
+    const inputs = getInputs(f.path);
+    if (!inputs.length) continue;
+    if (f.type === 'boolean') values[f.path] = inputs[0].checked;
+    else if (f.type === 'days') values[f.path] = inputs.filter(i => i.checked).map(i => Number(i.value));
+    else if (f.type === 'class_groups') {
+      values[f.path] = inputs.filter(i => i.checked).flatMap(i => i.dataset.classes.split(','));
+    } else if (f.type === 'rect' || f.type === 'size') {
+      const nums = inputs.sort((a,b) => (+a.dataset.index) - (+b.dataset.index)).map(i => i.value);
+      if (nums.some(v => v === '')) continue;  // incompleto: no se envía
+      values[f.path] = nums.map(Number);
+    } else if (f.type === 'integer' || f.type === 'number') {
+      if (inputs[0].value === '') continue;    // vacío = sin valor en config.yaml
+      values[f.path] = Number(inputs[0].value);
+    } else values[f.path] = inputs[0].value;
+  }
+  return values;
+}
+
+// Grupo apagado: se ve atenuado, pero sus campos se pueden editar igual.
+document.querySelectorAll('[data-toggle]').forEach(group => {
+  const box = group.querySelector(`[data-path="${CSS.escape(group.dataset.toggle)}"]`);
+  box.addEventListener('change', () => group.classList.toggle('off', !box.checked));
+});
+document.querySelectorAll('[data-partial]').forEach(el => { el.indeterminate = true; });
+
+let INITIAL = null;
+document.getElementById('settings-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const values = collect();
+  const updates = {};
+  for (const [path, value] of Object.entries(values)) {
+    if (INITIAL === null || JSON.stringify(value) !== JSON.stringify(INITIAL[path])) updates[path] = value;
+  }
+  if (!Object.keys(updates).length) {
+    msg.className = 'ok'; msg.textContent = 'Sin cambios.';
+    return;
+  }
+  msg.className = ''; msg.textContent = 'Guardando…';
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(updates),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.detail || r.statusText);
+    INITIAL = values;
+    errors.textContent = '';
+    msg.className = 'ok';
+    const n = body.changed.length;
+    msg.textContent = n ? `Guardado (${n} ${n === 1 ? 'campo' : 'campos'}). Reiniciá noise-monitor para aplicar.` : 'Sin cambios.';
+  } catch (e) {
+    msg.className = 'err'; msg.textContent = 'No se guardó nada.';
+    errors.textContent = e.message;
+  }
+});
+document.getElementById('settings-reload').addEventListener('click', () => location.reload());
+INITIAL = collect();
+loadSnapshot();
+draw();
+</script>
+{% endblock %}

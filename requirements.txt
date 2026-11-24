@@ -25,3 +25,5 @@ python-multipart>=0.0.9
 
 # Utilidades
 pyyaml>=6.0
+# Ajustes editables desde la web (round-trip que conserva comentarios)
+ruamel.yaml>=0.18
