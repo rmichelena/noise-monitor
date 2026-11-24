@@ -36,6 +36,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -852,8 +853,32 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     def settings_read(_: None = Depends(require_settings)):
         return _settings_payload()
 
+    def _reject_cross_site(request: Request) -> None:
+        """CSRF: el navegador reenvía Basic auth a cualquier sitio que postee acá.
+
+        Un `<form enctype="text/plain">` de otro origen es una request simple
+        (sin preflight) cuyo cuerpo puede ser JSON válido. Se exige
+        `application/json` —que cross-origin obliga a un preflight que este
+        server no autoriza— y, además, que el navegador no la marque como de
+        otro sitio: `Sec-Fetch-Site` si lo manda; si no, `Origin` contra el host.
+        """
+        ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            raise HTTPException(status_code=415, detail="Content-Type debe ser application/json")
+        site = request.headers.get("sec-fetch-site")
+        if site is not None:
+            if site not in ("same-origin", "none"):
+                raise HTTPException(status_code=403, detail="Origen no permitido")
+            return
+        origin = request.headers.get("origin")
+        if origin is not None:
+            hosts = {h for h in (request.headers.get("host"), request.headers.get("x-forwarded-host")) if h}
+            if origin == "null" or urlsplit(origin).netloc not in hosts:
+                raise HTTPException(status_code=403, detail="Origen no permitido")
+
     @app.post("/api/settings")
     async def settings_write(request: Request, _: None = Depends(require_settings)):
+        _reject_cross_site(request)
         try:
             updates = await request.json()
         except Exception as exc:

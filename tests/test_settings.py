@@ -43,8 +43,8 @@ class SettingsBase(unittest.TestCase):
         config = load_config(self.path)
         self.client = TestClient(create_app(config, self.dir, None, None))
 
-    def post(self, updates, auth=AUTH):
-        return self.client.post("/api/settings", auth=auth, json=updates)
+    def post(self, updates, auth=AUTH, headers=None):
+        return self.client.post("/api/settings", auth=auth, json=updates, headers=headers)
 
     def on_disk(self) -> dict:
         return yaml.safe_load(self.path.read_text(encoding="utf-8"))
@@ -71,6 +71,44 @@ class AuthTest(SettingsBase):
         with mock.patch.dict(os.environ, {"NOISE_SETTINGS_USER": "roberto"}):
             self.assertEqual(self.client.get("/api/settings", auth=AUTH).status_code, 401)
             self.assertEqual(self.client.get("/api/settings", auth=("roberto", AUTH[1])).status_code, 200)
+
+    def assert_blocked(self, status, **kwargs):
+        before = self.path.read_bytes()
+        response = self.client.post("/api/settings", auth=AUTH, **kwargs)
+        self.assertEqual(response.status_code, status, response.text)
+        self.assertEqual(self.path.read_bytes(), before, "un rechazo no toca el archivo")
+
+    def test_csrf_simple_request_bodies_are_rejected(self):
+        # Un <form enctype="text/plain"> de otro sitio manda JSON válido sin
+        # preflight y con el Basic auth que el navegador ya tiene.
+        body = b'{"triggers.noise_enabled": false, "x": "="}'
+        for ctype in ("text/plain", "application/x-www-form-urlencoded",
+                      "multipart/form-data; boundary=x", None):
+            with self.subTest(ctype=ctype):
+                headers = {"Content-Type": ctype} if ctype else {}
+                self.assert_blocked(415, content=body, headers=headers)
+
+    def test_csrf_cross_site_requests_are_rejected(self):
+        update = {"triggers.noise_enabled": False}
+        for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                        {"Origin": "https://evil.example"}, {"Origin": "null"},
+                        # Sec-Fetch-Site manda: un Origin que coincide no lo tapa.
+                        {"Sec-Fetch-Site": "cross-site", "Origin": "http://testserver"}):
+            with self.subTest(headers=headers):
+                self.assert_blocked(403, json=update, headers=headers)
+
+    def test_same_origin_requests_are_accepted(self):
+        for i, headers in enumerate(({"Sec-Fetch-Site": "same-origin", "Origin": "http://testserver"},
+                                     {"Origin": "http://testserver"},
+                                     # Detrás de un proxy que reescribe Host, el navegador
+                                     # sigue diciendo same-origin: eso manda, no el Host.
+                                     {"Sec-Fetch-Site": "same-origin", "Origin": "https://nodo.trycloudflare.com"},
+                                     {"Origin": "https://nodo.trycloudflare.com",
+                                      "X-Forwarded-Host": "nodo.trycloudflare.com"},
+                                     {})):
+            with self.subTest(headers=headers):
+                response = self.post({"triggers.cooldown_seconds": 10 + i}, headers=headers)
+                self.assertEqual(response.status_code, 200, response.text)
 
     def test_dashboard_stays_public(self):
         self.assertEqual(self.client.get("/api/health").status_code, 200)

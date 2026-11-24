@@ -172,6 +172,28 @@ function setNumber(path, value) {
   if (el && Number.isFinite(value)) el.value = Math.round(value);
 }
 
+// El canvas trabaja en píxeles del frame (`video.resolution`), que es el
+// espacio en que el pipeline lee ROI, filtro y puntos de velocidad. Un canvas
+// de tamaño fijo guardaba coordenadas de otro espacio.
+function frameSize() {
+  const r = getArray('video.resolution');
+  return r.length === 2 && r[0] > 0 && r[1] > 0 ? r : [1280, 720];
+}
+function resizeCanvas() {
+  const [w, h] = frameSize();
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  checkSnapshotSize();
+}
+function checkSnapshotSize() {
+  if (!image || !image.naturalWidth) return;
+  const [w, h] = frameSize();
+  if (image.naturalWidth !== w || image.naturalHeight !== h) {
+    hint.textContent = `La cámara entrega ${image.naturalWidth}×${image.naturalHeight} y la resolución configurada es ${w}×${h}: `
+      + 'las coordenadas se guardan en la configurada y el frame se muestra estirado.';
+  }
+}
+
 function draw() {
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
@@ -247,6 +269,7 @@ document.querySelectorAll('[data-mode]').forEach(btn => btn.addEventListener('cl
     'Arrastrá para dibujar el rectángulo; se ajusta al video.';
 }));
 document.querySelectorAll('[data-path]').forEach(el => el.addEventListener('change', () => {
+  resizeCanvas();
   roi = getArray('video.detection_roi');
   filter = getArray('video.detection_filter');
   speedLeft = getNumber('speed.reference_left_x');
@@ -261,7 +284,7 @@ async function loadSnapshot() {
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     image = new Image();
-    image.onload = () => { URL.revokeObjectURL(url); draw(); };
+    image.onload = () => { URL.revokeObjectURL(url); checkSnapshotSize(); draw(); };
     image.src = url;
   } catch (e) {
     hint.textContent = 'Sin frame de cámara para dibujar: ' + e.message;
@@ -328,6 +351,7 @@ document.getElementById('settings-form').addEventListener('submit', async ev => 
 });
 document.getElementById('settings-reload').addEventListener('click', () => location.reload());
 INITIAL = collect();
+resizeCanvas();
 loadSnapshot();
 draw();
 </script>
