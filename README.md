@@ -139,7 +139,29 @@ nada. Antes de reemplazar `config.yaml`, la config completa se valida y el
 archivo escrito se vuelve a leer con el mismo loader del servicio. El
 reemplazo es atómico y la versión anterior queda en `config.yaml.bak`. Se
 conservan los comentarios y el estilo de listas del archivo: guardar un campo
-cambia sólo sus líneas. Un guardado sin cambios no toca el archivo.
+cambia sólo sus líneas (una lista escrita en una línea, `[a, b]`, se
+reescribe en bloque). Un guardado sin cambios no toca el archivo.
+
+El guardado sólo acepta `application/json` desde la propia página: un
+formulario de otro sitio, que el navegador enviaría con la contraseña ya
+guardada, recibe 415 o 403.
+
+Otras validaciones que también aplican al arrancar:
+
+- `detection_min_width/height/aspect` no puede superar su máximo.
+- El criterio psicoacústico exige `phonometry` instalado en el entorno del
+  servicio (`requirements-trigger.txt`), un `audio.pressure_calibration.id` y
+  margen de buffer para la métrica elegida. Con pre/post de 5 s, el ejemplo
+  (10 s de audio y video) no alcanza para ninguna métrica: el buffer de audio
+  se cuantiza en bloques y queda apenas por debajo de los 10 s del clip.
+  `loudness_mean` arranca con 11 s y `annoyance_pa` con 14 s (medido con
+  `Settings.load` y los tiempos por defecto; ver el presupuesto de latencia en
+  la [guía de análisis acústico](docs/acoustic-analysis.md)). Al cambiar de
+  métrica, la página propone sus tiempos (PA: ventana y salto de 2 s,
+  latencia esperada 5,6 s).
+
+El editor de geometría trabaja en píxeles de `video.resolution`; si la cámara
+entrega otro tamaño, lo avisa.
 
 Los cambios **se aplican al reiniciar** el servicio
 (`sudo systemctl restart noise-monitor`): los monitores leen la configuración
