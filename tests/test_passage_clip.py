@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Regresión: cada pasaje de vehículo guarda su propio clip (aunque no haya
-ruido) y la fila de vehicle_passages queda con clip_path válido.
+ruido) y su fila `traffic` en events queda con clip_path válido.
 """
 
 import sqlite3
@@ -20,7 +20,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.event_manager import EventManager  # noqa: E402
-from support import example_config, resolve_stored  # noqa: E402
+from support import create_events_table, example_config, resolve_stored  # noqa: E402
 
 
 class PassageClipTest(unittest.TestCase):
@@ -56,6 +56,7 @@ class PassageClipTest(unittest.TestCase):
             "timestamp_exit": now - 0.5,
         }
         self.db = cfg["paths"]["database"]
+        create_events_table(self.db)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -64,7 +65,7 @@ class PassageClipTest(unittest.TestCase):
         self.em._process_passage(self.passage)
         conn = sqlite3.connect(self.db)
         row = conn.execute(
-            "SELECT clip_path FROM vehicle_passages"
+            "SELECT clip_path FROM events WHERE kind = 'traffic'"
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row, "no se insertó el pasaje")
@@ -84,8 +85,9 @@ class PassageClipTest(unittest.TestCase):
         classifier = MagicMock()
         classifier.classify.side_effect = RuntimeError("Coral no disponible")
         self.em.audio_monitor._classifier = classifier
-        clip, _ = self.em._save_passage_clip(self.passage)
+        clip, _, muted = self.em._save_passage_clip(self.passage)
         self.assertTrue(clip)
+        self.assertTrue(muted)
         streams = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
              "-of", "csv=p=0", str(resolve_stored(clip))],

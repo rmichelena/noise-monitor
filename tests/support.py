@@ -49,3 +49,25 @@ def detection(cls: str = "car", cx: float = 100.0, cy: float = 100.0,
 
 def tmpdir() -> tempfile.TemporaryDirectory:
     return tempfile.TemporaryDirectory()
+
+
+def create_events_table(db_path: str | Path) -> None:
+    """Crea `events` con el DDL de la migración.
+
+    Hasta el cutover la tabla no vive en schema.sql (init_database no la crea):
+    se reusa el esquema de scripts/migrate_unified.py en vez de duplicarlo.
+    """
+    import sqlite3
+
+    scripts = str(PROJECT_DIR / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from migrate_unified import EVENTS_DDL_STATEMENTS
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for statement in EVENTS_DDL_STATEMENTS:
+            conn.execute(statement)
+        conn.commit()
+    finally:
+        conn.close()

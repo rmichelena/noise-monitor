@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.event_manager import EventManager  # noqa: E402
-from support import example_config, resolve_stored  # noqa: E402
+from support import create_events_table, example_config, resolve_stored  # noqa: E402
 
 
 class CulpritWindowTest(unittest.TestCase):
@@ -59,6 +59,7 @@ class CulpritWindowTest(unittest.TestCase):
 
         self.em = EventManager(audio, video, config=cfg, base_dir=PROJECT_DIR)
         self.db = cfg["paths"]["database"]
+        create_events_table(self.db)
         self.trigger = {
             "type": "peak", "db": 42.0, "timestamp": now,
             "sound_class": "Vehicle", "sound_category": "vehicle",
@@ -72,7 +73,7 @@ class CulpritWindowTest(unittest.TestCase):
         self.em._process_trigger(self.trigger)
         conn = sqlite3.connect(self.db)
         row = conn.execute(
-            "SELECT vehicle_class, confidence, clip_path FROM noise_events"
+            "SELECT vehicle_class, confidence, clip_path FROM events WHERE kind = 'noise'"
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row, "no se insertó el evento")

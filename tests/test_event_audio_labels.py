@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -13,6 +14,9 @@ from src.audio_classifier import AudioClassifier
 from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
 from src.utils import init_database, load_config
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import create_events_table  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,6 +88,7 @@ class CaptureRankingTests(unittest.TestCase):
             video = SimpleNamespace(detections_between=lambda *args: [], recent_detections=[], video_buffer=[])
             manager = EventManager(audio, video, config=config, base_dir=ROOT)
             manager._save_clip = Mock(return_value=("event.mp4", 1000))
+            create_events_table(db_path)
 
             def capture_postroll(_):
                 audio.audio_buffer.clear()
@@ -95,7 +100,7 @@ class CaptureRankingTests(unittest.TestCase):
 
             self.assertEqual(classifier.predict_scores.call_count, 3)
             with sqlite3.connect(db_path) as conn:
-                row, = conn.execute("SELECT sound_class,sound_category,sound_labels_json FROM noise_events")
+                row, = conn.execute("SELECT sound_class,sound_category,sound_labels_json FROM events")
             self.assertEqual(row[:2], ("Car", "vehicle"))
             self.assertEqual([tag["label"] for tag in json.loads(row[2])], ["Car", "Dog", "Motorcycle"])
 

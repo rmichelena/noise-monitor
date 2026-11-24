@@ -1,5 +1,6 @@
 import math
 import sqlite3
+import sys
 from collections import deque
 import tempfile
 import time
@@ -13,6 +14,9 @@ import numpy as np
 from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
 from src.utils import MIN_DB, load_config
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import create_events_table  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -138,6 +142,7 @@ class EventPersistenceTests(unittest.TestCase):
         )
         manager = EventManager(audio, video, config=config, base_dir=ROOT)
         manager._save_clip = Mock(return_value=("event.mp4", 1000))
+        create_events_table(manager.db_path)
         return manager, audio, stamp
 
     def test_persists_window_max_and_average_instead_of_trigger_sample(self):
@@ -145,7 +150,7 @@ class EventPersistenceTests(unittest.TestCase):
             manager, _, stamp = self._event(directory, history=True)
             manager._process_trigger({"type": "peak", "db": 43.0, "timestamp": stamp})
             with sqlite3.connect(Path(directory) / "events.db") as conn:
-                row, = conn.execute("SELECT db_max, db_avg FROM noise_events")
+                row, = conn.execute("SELECT db_max, db_avg FROM events")
             self.assertAlmostEqual(row[0], 56.0)
             self.assertAlmostEqual(row[1], energy_mean([30.0] * 20 + [56.0]))
 
@@ -157,7 +162,7 @@ class EventPersistenceTests(unittest.TestCase):
             )
             manager._process_trigger({"type": "peak", "db": 43.0, "timestamp": stamp})
             with sqlite3.connect(Path(directory) / "events.db") as conn:
-                row, = conn.execute("SELECT db_max FROM noise_events")
+                row, = conn.execute("SELECT db_max FROM events")
             self.assertAlmostEqual(row[0], 43.0)
 
     def test_level_history_is_snapshotted_across_the_post_roll_wait(self):
@@ -178,7 +183,7 @@ class EventPersistenceTests(unittest.TestCase):
             with self.assertLogs("src.event_manager", level="WARNING") as logs:
                 manager._process_trigger({"type": "peak", "db": 43.0, "timestamp": stamp})
             with sqlite3.connect(Path(directory) / "events.db") as conn:
-                row, = conn.execute("SELECT db_max, db_avg FROM noise_events")
+                row, = conn.execute("SELECT db_max, db_avg FROM events")
             self.assertAlmostEqual(row[0], 43.0)
             self.assertAlmostEqual(row[1], 43.0)
             self.assertTrue(any("nivel del disparo" in line for line in logs.output))

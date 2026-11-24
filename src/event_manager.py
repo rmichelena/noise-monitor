@@ -1,11 +1,15 @@
 """
-Event Manager v2: dos flujos independientes.
+Event Manager: una sola tabla `events`, un clip por evento.
 
-1. Passages (del CentroidTracker via VideoMonitor) → vehicle_passages
-2. Triggers del AudioMonitor → clasificación YAMNet, noise_events y clips
+1. Passages (del CentroidTracker via VideoMonitor) → fila `traffic` con su clip.
+2. Triggers del AudioMonitor → clasificación YAMNet y fila `noise` con su clip.
 
-Correlación: si un trigger vehicular coincide con un passage reciente,
-se linkean via passage_id / noise_event_id.
+Correlación: si un trigger vehicular coincide con un pasaje `traffic`
+reciente, esa fila pasa a `both`, recibe los datos acústicos y un único clip
+con la ventana unión; el clip previo del pasaje se borra.
+
+La tabla `events` la crea scripts/migrate_unified.py (hasta el cutover no
+vive en schema.sql): `run()` se niega a arrancar sin ella.
 """
 
 import json
@@ -49,6 +53,11 @@ DB_BANDS = [
     (60.0, (0, 150, 255)),
     (DB_BAR_MAX, (40, 40, 220)),
 ]
+
+
+def _iso(timestamp: float) -> str:
+    """Epoch → ISO 8601 local, el formato de `events.timestamp`."""
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _db_color(value: float) -> tuple[int, int, int]:
@@ -146,8 +155,8 @@ def get_lane(detections: list[dict]) -> str:
 class EventManager:
     """
     Consume dos colas en threads separados:
-      - passage_queue  → INSERT vehicle_passages
-      - trigger_queue  → correlación + clips + INSERT noise_events
+      - passage_queue  → INSERT events (traffic)
+      - trigger_queue  → correlación + clips + INSERT/UPDATE events (noise/both)
     """
 
     def __init__(
@@ -318,13 +327,16 @@ class EventManager:
     # ------------------------------------------------------------------
     # Passage processing (from tracker via VideoMonitor.passage_queue)
     # ------------------------------------------------------------------
-    def _save_passage_clip(self, passage: dict) -> tuple[str, int]:
-        """Clip corto (5 s) alrededor del pasaje; audio mudo si hay voz."""
+    def _save_passage_clip(self, passage: dict) -> tuple[str, int, bool]:
+        """Clip corto (5 s) alrededor del pasaje; audio mudo si hay voz.
+
+        Devuelve (clip_path, duration_ms, audio_muted).
+        """
         now = time.time()
         t_end = min(now, passage["timestamp_exit"] + self.post_seconds)
         t_start = max(passage["timestamp_enter"] - self.pre_seconds, t_end - 5.0)
         if t_start >= t_end:
-            return "", 0
+            return "", 0, False
 
         # Copiar antes de iterar: los buffers los mutan los hilos de captura
         # y un deque modificado durante la iteración lanza RuntimeError.
@@ -339,7 +351,7 @@ class EventManager:
             if t_start <= ts <= t_end
         ]
         if len(video_list) < 10 or not audio_list:
-            return "", 0
+            return "", 0, False
 
         mute_audio = False
         classifier = getattr(self.audio_monitor, "_classifier", None)
@@ -359,52 +371,54 @@ class EventManager:
             audio_list, video_list, sample_rate, passage["timestamp_exit"],
             mute_audio=mute_audio, prefix="passage",
         )
-        return clip_path or "", duration_ms or 0
+        return clip_path or "", duration_ms or 0, mute_audio
 
     def _process_passage(self, passage: dict):
-        """Insert a completed vehicle passage into DB."""
-        ts_enter = datetime.fromtimestamp(passage["timestamp_enter"]).strftime(
-            "%Y-%m-%dT%H:%M:%S"
-        )
-        ts_exit = datetime.fromtimestamp(passage["timestamp_exit"]).strftime(
-            "%Y-%m-%dT%H:%M:%S"
-        )
+        """Inserta un pasaje completo como evento `traffic` con su propio clip."""
         db_now = self.audio_monitor.current_db
 
         # Clip del pasaje: vehículos en movimiento, aunque no hicieran ruido.
-        clip_path = ""
-        duration_ms = 0
+        # Si después un ruido lo reclama, el clip unión lo reemplaza.
+        clip_path, duration_ms, muted = "", 0, False
         try:
-            clip_path, duration_ms = self._save_passage_clip(passage)
+            clip_path, duration_ms, muted = self._save_passage_clip(passage)
         except Exception:
             logger.exception("No se pudo guardar el clip del pasaje")
 
         conn = sqlite3.connect(self.db_path)
-        cur = conn.execute(
-            """
-            INSERT INTO vehicle_passages
-                (timestamp, timestamp_exit, vehicle_class, lane, direction,
-                 speed_kmh, detection_score, db_at_time, clip_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ts_enter,
-                ts_exit,
-                passage["vehicle_class"],
-                passage.get("lane"),
-                passage.get("direction"),
-                passage.get("speed_kmh"),
-                passage.get("detection_score"),
-                round(db_now, 1),
-                clip_path,
-            ),
-        )
-        passage_id = cur.lastrowid
-        conn.commit()
-        conn.close()
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO events
+                    (kind, timestamp, start_ts, end_ts, db_max, vehicle_class, lane,
+                     direction, speed_kmh, detection_score, track_id, audio_muted,
+                     duration_ms, clip_path)
+                VALUES ('traffic', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _iso(passage["timestamp_enter"]),
+                    passage["timestamp_enter"],
+                    passage["timestamp_exit"],
+                    round(db_now, 1),
+                    passage["vehicle_class"],
+                    passage.get("lane"),
+                    passage.get("direction"),
+                    passage.get("speed_kmh"),
+                    passage.get("detection_score"),
+                    passage.get("track_id"),
+                    1 if muted else 0,
+                    duration_ms or None,
+                    clip_path or None,
+                ),
+            )
+            event_id = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
 
-        # Keep in memory for correlation
-        passage["db_id"] = passage_id
+        # En memoria para la correlación con triggers de audio.
+        passage["db_id"] = event_id
+        passage["claimed"] = False
         with self._passages_lock:
             now = time.time()
             self._recent_passages = [
@@ -414,39 +428,182 @@ class EventManager:
             self._recent_passages.append(passage)
 
         logger.info(
-            "Passage #%d: %s (%s) %.1f dB @ %s",
-            passage_id,
+            "Traffic #%d: %s (%s) %.1f dB @ %s",
+            event_id,
             passage["vehicle_class"],
             passage.get("lane", "?"),
             db_now,
-            ts_enter,
+            _iso(passage["timestamp_enter"]),
         )
 
     def _find_matching_passage(
         self, vehicle_class: str, timestamp: float, window: tuple[float, float] | None = None,
-    ) -> int | None:
-        """Find a recent passage of the same class within ±PASSAGE_TTL."""
+    ) -> dict | None:
+        """Pasaje `traffic` reciente de la misma clase; lo marca como reclamado.
+
+        Un pasaje reclamado ya es (o va a ser) `both` y sale del conjunto de
+        candidatos: un pasaje no se asigna a dos ruidos.
+        """
         with self._passages_lock:
             if window:
                 left, right = window
+                # La unicidad se evalúa sobre todos los pasajes de la ventana:
+                # que uno ya esté reclamado no vuelve inequívoco al otro.
                 candidates = [
                     p for p in self._recent_passages
                     if p["timestamp_enter"] <= right and p["timestamp_exit"] >= left
                 ]
-                if len(candidates) == 1 and candidates[0]["vehicle_class"] == vehicle_class:
-                    return candidates[0].get("db_id")
+                if (
+                    len(candidates) == 1
+                    and candidates[0]["vehicle_class"] == vehicle_class
+                    and not candidates[0].get("claimed")
+                ):
+                    candidates[0]["claimed"] = True
+                    return candidates[0]
                 return None
             best = None
             best_dt = float("inf")
             for p in self._recent_passages:
-                if p["vehicle_class"] == vehicle_class:
+                if p["vehicle_class"] == vehicle_class and not p.get("claimed"):
                     dt = abs(p["timestamp_exit"] - timestamp)
                     if dt < best_dt:
                         best_dt = dt
                         best = p
             if best and best_dt < self._PASSAGE_TTL:
-                return best.get("db_id")
+                best["claimed"] = True
+                return best
         return None
+
+    def _window_from_buffers(
+        self, held: list[tuple[float, object]], buffer, start: float, end: float,
+    ) -> list[tuple[float, object]]:
+        """Lo retenido más lo que siga en el buffer dentro de [start, end]."""
+        merged = {ts: item for ts, item in held if start <= ts <= end}
+        for ts, item in buffer.copy():
+            if start <= ts <= end and ts not in merged:
+                merged[ts] = item
+        return sorted(merged.items(), key=lambda pair: pair[0])
+
+    def _delete_replaced_clip(self, stored: str | None, replacement: str) -> None:
+        """Borra el clip del pasaje que el clip unión reemplazó."""
+        if not stored or stored == replacement:
+            return
+        path = Path(stored)
+        path = (path if path.is_absolute() else self.base_dir / path).resolve()
+        if self.clips_dir.resolve() not in path.parents:
+            logger.warning("Clip reemplazado fuera del directorio de clips; no se borra: %s", path)
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("No se pudo borrar el clip reemplazado %s", path, exc_info=True)
+
+    def _upgrade_to_both(
+        self,
+        passage: dict,
+        fields: dict,
+        audio_list: list,
+        video_list: list,
+        noise_window: tuple[float, float],
+        mute_audio: bool,
+        unique_name: bool,
+    ) -> int | None:
+        """Convierte el `traffic` del pasaje en `both` con un único clip unión.
+
+        Devuelve el id del evento, o None si el pasaje ya no era `traffic`.
+        """
+        event_id = passage["db_id"]
+        conn = sqlite3.connect(self.db_path)
+        try:
+            # Reclamo atómico: sólo un trigger puede pasar este pasaje a both.
+            claimed = conn.execute(
+                """
+                UPDATE events SET kind = 'both', timestamp = ?, peak_ts = ?,
+                    db_max = ?, db_avg = ?, trigger_type = ?, sound_class = ?,
+                    sound_category = ?, sound_confidence = ?, sound_labels_json = ?,
+                    confidence = ?
+                WHERE id = ? AND kind = 'traffic'
+                """,
+                (
+                    fields["timestamp"], fields["peak_ts"], fields["db_max"],
+                    fields["db_avg"], fields["trigger_type"], fields["sound_class"],
+                    fields["sound_category"], fields["sound_confidence"],
+                    fields["sound_labels_json"], fields["confidence"], event_id,
+                ),
+            ).rowcount
+            conn.commit()
+            if not claimed:
+                logger.warning("El pasaje #%d ya no es traffic; el ruido queda aparte", event_id)
+                return None
+            old_clip, passage_muted, pinned = conn.execute(
+                "SELECT clip_path, audio_muted, pinned FROM events WHERE id = ?", (event_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        noise_start, noise_end = noise_window
+        union_start = min(noise_start, passage["timestamp_enter"])
+        union_end = min(max(noise_end, passage["timestamp_exit"]), time.time())
+        union_audio = self._window_from_buffers(
+            audio_list, self.audio_monitor.audio_buffer, union_start, union_end)
+        union_video = self._window_from_buffers(
+            video_list, self.video_monitor.video_buffer, union_start, union_end)
+        # El audio agregado del pasaje no pasó por la detección de voz del
+        # ruido: si cualquiera de los dos fue silenciado, el clip unión también.
+        union_muted = mute_audio or bool(passage_muted)
+        sample_rate = self.config["audio"]["sample_rate"]
+
+        clip_path, duration_ms, muted = None, None, union_muted
+        start_ts, end_ts = union_start, union_end
+        try:
+            clip_path, duration_ms = self._save_clip(
+                union_audio, union_video, sample_rate, fields["peak_ts"],
+                mute_audio=union_muted, unique_name=unique_name,
+            )
+        except Exception:
+            logger.exception("Falló el clip unión del evento #%d", event_id)
+            clip_path = None
+        if clip_path:
+            covered = [ts for ts, _ in union_audio[:1] + union_video[:1]]
+            covered_end = [ts for ts, _ in union_audio[-1:] + union_video[-1:]]
+            start_ts = max(union_start, min(covered))
+            end_ts = min(union_end, max(covered_end))
+        else:
+            logger.warning("Clip unión del evento #%d falló; se guarda el clip del ruido", event_id)
+            muted = mute_audio
+            start_ts, end_ts = noise_window
+            try:
+                clip_path, duration_ms = self._save_clip(
+                    audio_list, video_list, sample_rate, fields["peak_ts"],
+                    mute_audio=mute_audio, unique_name=unique_name,
+                )
+            except Exception:
+                logger.exception("Falló también el clip del ruido del evento #%d", event_id)
+                clip_path = None
+
+        if not clip_path:
+            logger.error(
+                "Evento #%d sin clip nuevo: conserva el del pasaje (%s)", event_id, old_clip or "none",
+            )
+            return event_id
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE events SET clip_path = ?, duration_ms = ?, audio_muted = ?,"
+                " start_ts = ?, end_ts = ? WHERE id = ?",
+                (clip_path, duration_ms, 1 if muted else 0, start_ts, end_ts, event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        if pinned:
+            # El dueño marcó el pasaje: su clip es evidencia y no se toca.
+            logger.info("Evento #%d fijado: se conserva el clip previo %s", event_id, old_clip)
+        else:
+            self._delete_replaced_clip(old_clip, clip_path)
+        return event_id
 
     # ------------------------------------------------------------------
     # Trigger processing (from AudioMonitor.event_queue)
@@ -553,68 +710,82 @@ class EventManager:
             confidence = "low"
             lane = "none"
 
-        clip_path, duration_ms = self._save_clip(
-            audio_list, video_list, sample_rate, timestamp, mute_audio=mute_audio, unique_name=perceptual,
-        )
-        if clip_path is None:
-            clip_path = ""
-            duration_ms = 0
-
-        # Correlate with passage if vehicular
-        passage_id = None
+        # Correlación con un pasaje traffic reciente.
+        passage = None
         if culprit and culprit != "unknown":
-            passage_id = self._find_matching_passage(
+            passage = self._find_matching_passage(
                 culprit, timestamp, window=(t_start, t_end) if perceptual else None,
             )
-            if perceptual and passage_id is None:
+            if perceptual and passage is None:
                 culprit, lane = None, "none"
 
-        ts_iso = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%dT%H:%M:%S")
+        ts_iso = _iso(timestamp)
+        fields = {
+            "timestamp": ts_iso, "peak_ts": timestamp, "db_max": db_max, "db_avg": db_avg,
+            "trigger_type": trigger_type, "sound_class": sound_class,
+            "sound_category": sound_category, "sound_confidence": sound_confidence,
+            "sound_labels_json": (
+                json.dumps(sound_labels, ensure_ascii=False, allow_nan=False) if sound_labels else None
+            ),
+            "confidence": confidence,
+        }
+
+        event_id = None
+        kind = "noise"
+        if passage is not None:
+            event_id = self._upgrade_to_both(
+                passage, fields, audio_list, video_list, (t_start, t_end),
+                mute_audio, unique_name=perceptual,
+            )
+            if event_id is not None:
+                kind = "both"
+
+        clip_path = None
+        if event_id is None:
+            clip_path, duration_ms = self._save_clip(
+                audio_list, video_list, sample_rate, timestamp, mute_audio=mute_audio, unique_name=perceptual,
+            )
+            if clip_path is None:
+                duration_ms = None
 
         conn = sqlite3.connect(self.db_path)
-        cur = conn.execute(
-            """
-            INSERT INTO noise_events
-                (timestamp, db_max, db_avg, trigger_type,
-                 sound_class, sound_category, sound_confidence, sound_labels_json,
-                 vehicle_class, lane, confidence,
-                 passage_id, clip_path, audio_muted, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ts_iso, db_max, db_avg, trigger_type,
-                sound_class, sound_category, sound_confidence,
-                json.dumps(sound_labels, ensure_ascii=False, allow_nan=False) if sound_labels else None,
-                culprit, lane, confidence,
-                passage_id, clip_path, 1 if mute_audio else 0, duration_ms,
-            ),
-        )
-        noise_event_id = cur.lastrowid
-        if perceptual and trigger.get("trigger_decision"):
-            conn.execute(
-                "INSERT INTO acoustic_trigger_decisions (event_table, event_id, decision_json) VALUES (?, ?, ?)",
-                ("noise_events", noise_event_id, json.dumps(trigger["trigger_decision"], allow_nan=False)),
-            )
-
-        # Link passage back to noise event
-        if passage_id:
-            conn.execute(
-                "UPDATE vehicle_passages SET noise_event_id = ? WHERE id = ?",
-                (noise_event_id, passage_id),
-            )
-
-        conn.commit()
-        conn.close()
+        try:
+            if event_id is None:
+                cur = conn.execute(
+                    """
+                    INSERT INTO events
+                        (kind, timestamp, start_ts, end_ts, peak_ts, db_max, db_avg,
+                         trigger_type, sound_class, sound_category, sound_confidence,
+                         sound_labels_json, vehicle_class, lane, confidence,
+                         audio_muted, duration_ms, clip_path)
+                    VALUES ('noise', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ts_iso, t_start, t_end, timestamp, db_max, db_avg,
+                        trigger_type, sound_class, sound_category, sound_confidence,
+                        fields["sound_labels_json"], culprit, lane, confidence,
+                        1 if mute_audio else 0, duration_ms, clip_path,
+                    ),
+                )
+                event_id = cur.lastrowid
+            if perceptual and trigger.get("trigger_decision"):
+                conn.execute(
+                    "INSERT INTO acoustic_trigger_decisions (event_table, event_id, decision_json) VALUES (?, ?, ?)",
+                    ("events", event_id, json.dumps(trigger["trigger_decision"], allow_nan=False)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
         self._last_event_ts = timestamp
 
         logger.info(
-            "NoiseEvent #%d: %.1f dB, %s/%s (%s) clip=%s%s @ %s",
-            noise_event_id,
+            "Event #%d (%s): %.1f dB, %s/%s (%s)%s @ %s",
+            event_id,
+            kind,
             db_max,
             sound_category or "?",
             sound_class or "?",
             culprit or "none",
-            clip_path or "none",
             " (audio mudo)" if mute_audio else "",
             ts_iso,
         )
@@ -669,8 +840,23 @@ class EventManager:
             except Exception as e:
                 logger.exception("Error procesando trigger psicoacústico: %s", e)
 
+    def _require_events_table(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'"
+            ).fetchone()
+        finally:
+            conn.close()
+        if not exists:
+            raise RuntimeError(
+                f"{self.db_path} no tiene la tabla events: correr scripts/migrate_unified.py"
+            )
+
     def run(self):
         """Start both consumer loops in separate threads."""
+        # Sin la tabla cada evento fallaría en su INSERT y sólo quedaría en el log.
+        self._require_events_table()
         self._running = True
         self._t_passage = threading.Thread(
             target=self._passage_loop, daemon=True, name="passage-consumer"

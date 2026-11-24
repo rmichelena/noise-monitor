@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -15,6 +16,9 @@ from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
 from src.perceptual_trigger import PerceptualTrigger, Settings, score_window
 from src.utils import load_config
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import create_events_table  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,6 +129,7 @@ class PerceptualTriggerTests(unittest.TestCase):
             video = SimpleNamespace(detections_between=lambda *args: [], video_buffer=[(stamp - 4, None)])
             manager = EventManager(audio, video, config=config, base_dir=ROOT)
             manager._save_clip = Mock(return_value=("event.mp4", 1000))
+            create_events_table(manager.db_path)
 
             def capture_post_roll(_):
                 audio.audio_buffer.clear()
@@ -151,6 +156,7 @@ class PerceptualTriggerTests(unittest.TestCase):
             video = SimpleNamespace(detections_between=lambda *args: [], video_buffer=[])
             manager = EventManager(audio, video, config=config, base_dir=ROOT)
             manager._save_clip = Mock(return_value=("event.mp4", 1000))
+            create_events_table(manager.db_path)
             stamp = time.time() - 6
             audio._perceptual_trigger._emit(
                 stamp, 4.5, [(stamp, np.zeros(4), 55.)], np.zeros(4),
@@ -160,7 +166,7 @@ class PerceptualTriggerTests(unittest.TestCase):
             self.assertTrue(manager._save_clip.call_args.kwargs["mute_audio"])
             with sqlite3.connect(config["paths"]["database"]) as conn:
                 conn.row_factory = sqlite3.Row
-                event = conn.execute("SELECT * FROM noise_events").fetchone()
+                event = conn.execute("SELECT * FROM events").fetchone()
                 result = latest_analysis(conn, event["id"])
             self.assertEqual(event["trigger_type"], "psychoacoustic")
             self.assertEqual(event["db_max"], 55.)
