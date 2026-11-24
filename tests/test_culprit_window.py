@@ -54,6 +54,8 @@ class CulpritWindowTest(unittest.TestCase):
             (now + i * 0.093, np.zeros(4096, dtype=np.float32)) for i in range(30)
         ]
         audio.current_db = 42.0
+        # Sin historial de niveles: el evento conserva el nivel del disparo.
+        audio.level_stats.return_value = None
 
         self.em = EventManager(audio, video, config=cfg, base_dir=PROJECT_DIR)
         self.db = cfg["paths"]["database"]

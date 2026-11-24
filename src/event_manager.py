@@ -509,6 +509,18 @@ class EventManager:
         if not perceptual and not vehicle_dets and db_max < self.peak_db and db_max < self.correlation_db:
             return
 
+        # db_max/db_avg describen el clip, no el bloque que disparó: el pico
+        # real del pasaje suele llegar después del primer cruce del umbral.
+        level_stats = self.audio_monitor.level_stats(audio_list)
+        if level_stats:
+            db_max = level_stats["max"]
+            db_avg = level_stats["avg"]
+        else:
+            logger.warning(
+                "Sin historial de niveles para el clip de %.3f; se conserva el nivel del disparo",
+                timestamp,
+            )
+
         if perceptual or sound_class is None:
             sound_class, sound_category, sound_confidence, speech, sound_labels = (
                 self.audio_monitor.classify_event_clip(audio_list, timestamp, scan_all_speech=perceptual)

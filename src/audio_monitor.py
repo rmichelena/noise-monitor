@@ -143,6 +143,21 @@ class AudioMonitor:
             return None
         return best_db
 
+    def level_stats(self, blocks: list[tuple[float, np.ndarray]]) -> dict | None:
+        """Máximo y promedio dB(A) de los bloques que forman el clip.
+
+        Usa el historial ya calculado (mismo A-weighting y offset que el
+        medidor y los triggers), restringido a los timestamps del clip, para
+        no recalcular ni abrir una segunda ruta de medición.
+        """
+        if not blocks:
+            return None
+        history = dict(self._db_history)
+        values = [history[ts] for ts, _ in blocks if ts in history]
+        if not values:
+            return None
+        return {"max": max(values), "avg": sum(values) / len(values), "count": len(values)}
+
     @property
     def current_db(self) -> float:
         """Nivel dB actual (thread-safe)."""
