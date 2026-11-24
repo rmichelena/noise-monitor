@@ -127,14 +127,10 @@ class AudioMonitor:
         self._level_vals: list[float] = []
 
         # Historial reciente de dB por bloque, para calcular el nivel de los
-        # clips: (timestamp, dB). Se dimensiona con la ventana real del clip
-        # (pre + post) más margen; un maxlen fijo podía dejar la estadística
-        # incompleta en ventanas largas sin avisar.
-        window_seconds = float(buffer_cfg.get("pre_event_seconds", 5)) + float(
-            buffer_cfg.get("post_event_seconds", 5)
-        )
-        history_len = max(600, int((window_seconds + 2) * self.sample_rate / self.block_size))
-        self._db_history: deque[tuple[float, float]] = deque(maxlen=history_len)
+        # clips: (timestamp, dB). Mismo horizonte que audio_buffer: si un
+        # bloque sobrevive para el clip, su nivel también. Un margen fijo
+        # podía perder bloques cuando el worker acumula latencia en ráfagas.
+        self._db_history: deque[tuple[float, float]] = deque(maxlen=max(600, self.buffer_maxlen))
 
         self._perceptual_trigger = (
             PerceptualTrigger(settings, self.sample_rate, self.block_size, self.event_queue.put_nowait)

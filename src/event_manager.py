@@ -517,7 +517,7 @@ class EventManager:
             db_avg = level_stats["avg"]
         else:
             logger.warning(
-                "Sin historial de niveles para el clip de %.3f; se conserva el nivel del disparo",
+                "Sin estadísticas de nivel utilizables para el clip de %.3f; se conserva el nivel del disparo",
                 timestamp,
             )
 

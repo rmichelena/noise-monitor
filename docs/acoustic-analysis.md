@@ -5,7 +5,7 @@
 | Área | Comportamiento observado en el código |
 | --- | --- |
 | Audio | `AudioMonitor` recibe bloques del Dayton iMM-6C USB vía PortAudio, en mono flotante. La configuración de ejemplo usa 44 100 Hz y 4096 muestras (~93 ms). El modo simulado puede leer WAV. |
-| Niveles | El monitor aplica ponderación A y calcula RMS por bloque. Suma `calibration_offset` en dB. El pico guardado suele ser el nivel del bloque que disparó el evento y el resumen por minuto usa una media aritmética de dB. La auditoría no encontró LAeq energético, constante Fast, espectro persistido ni una referencia absoluta de presión con ID y ganancia vigentes. |
+| Niveles | El monitor aplica ponderación A y calcula RMS por bloque. Suma `calibration_offset` en dB. En `a43fe2f` el pico guardado era el nivel del bloque que disparó el evento y el resumen por minuto usaba una media aritmética de dB (ver la nota de corte del 2026-11-24 más abajo). La auditoría no encontró LAeq energético, constante Fast, espectro persistido ni una referencia absoluta de presión con ID y ganancia vigentes. |
 | Disparo | Pico de 85 dB o sucesión sobre 70 dB durante ~1,5 s en el ejemplo. Umbral de correlación de 65 dB y cooldown de 30 s en el consumidor. La configuración efectiva del nodo es local. |
 | YAMNet | Modelo ligero con 521 etiquetas AudioSet, LiteRT en CPU y remuestreo a 16 kHz. El monitor clasifica ~1 s anterior al disparo en un hilo con cola de 8. Si se satura, pasa el evento sin etiqueta. El consumidor de pasajes también usa YAMNet para silenciar clips con habla. |
 | Visión | OpenCV, SSD MobileNet V2 en Coral USB y seguimiento por centroides. El ejemplo usa 720p, 30 FPS, inferencia cada dos cuadros y un ROI de calle. Si falla el Coral, el código desactiva detección y reintenta. |

@@ -43,7 +43,11 @@ class LevelStatsTests(unittest.TestCase):
 
     def test_silence_floor_does_not_sink_the_average(self):
         with tempfile.TemporaryDirectory() as directory:
-            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            config = example_config(directory)
+            # Con offset != 0 el piso calibrado deja de coincidir con MIN_DB.
+            config["audio"]["calibration_offset"] = 4.0
+            audio = AudioMonitor(config=config, base_dir=ROOT)
+            self.assertEqual(audio.calibration_offset, 4.0)
             floor = MIN_DB + audio.calibration_offset
             audio._db_history.extend([(1.0, floor), (1.1, 40.0), (1.2, 50.0)])
             stats = audio.level_stats([(1.0, None), (1.1, None), (1.2, None)])
@@ -77,13 +81,16 @@ class LevelStatsTests(unittest.TestCase):
             self.assertEqual(stats["max"], 50.0)
             self.assertAlmostEqual(stats["avg"], energy_mean([40.0, 50.0]))
 
-    def test_history_size_covers_configured_clip_window(self):
+    def test_history_lifetime_matches_audio_buffer(self):
         with tempfile.TemporaryDirectory() as directory:
             config = example_config(directory)
-            config["buffer"].update(pre_event_seconds=20, post_event_seconds=20)
+            # 120 s supera el piso de 600 bloques: el test distingue el
+            # dimensionado por buffer del maxlen fijo anterior.
+            config["buffer"]["audio_seconds"] = 120
             audio = AudioMonitor(config=config, base_dir=ROOT)
-            needed = 40 * audio.sample_rate / audio.block_size
+            needed = 120 * audio.sample_rate / audio.block_size
             self.assertGreaterEqual(audio._db_history.maxlen, needed)
+            self.assertEqual(audio._db_history.maxlen, audio.buffer_maxlen)
 
     def test_missing_history_or_blocks_returns_none(self):
         with tempfile.TemporaryDirectory() as directory:
