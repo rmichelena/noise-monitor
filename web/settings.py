@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import CommentMark
+from ruamel.yaml.tokens import CommentToken
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+from ruamel.yaml.util import load_yaml_guess_indent
 
 from src.perceptual_trigger import Settings
 from src.schedule import DEFAULT_END, DEFAULT_START, _parse_hhmm
@@ -172,16 +176,81 @@ def _get_path(config: dict, path: str) -> Any:
     return cur
 
 
+def _trailing_slot(mapping: Any, key: Any) -> tuple[list, int] | None:
+    """Dónde guarda ruamel el comentario que sigue al último valor de `key`.
+
+    Baja por el último elemento de mapas y listas anidados: ahí cuelgan los
+    comentarios y líneas en blanco que separan este bloque del siguiente.
+    Devuelve (lista de comentarios del ítem, índice del token) o None.
+    """
+    container, item = mapping, key
+    while True:
+        value = container[item]
+        if isinstance(value, CommentedMap) and len(value):
+            container, item = value, list(value)[-1]
+            continue
+        if isinstance(value, CommentedSeq) and len(value):
+            slot = value.ca.items.setdefault(len(value) - 1, [None, None])
+            return slot, 0
+        if not isinstance(container, CommentedMap):
+            return None
+        return container.ca.items.setdefault(item, [None, None, None, None]), 2
+
+
+def _add_key(mapping: Any, key: str, value: Any) -> None:
+    """Agrega una clave al final sin dejarla debajo del comentario del bloque siguiente.
+
+    ruamel cuelga del último valor del mapa el comentario de fin de línea y
+    todo lo que sigue hasta la próxima clave (líneas en blanco, el
+    encabezado de la sección siguiente). Una clave nueva agregada al final
+    quedaría después de ese encabezado; se mueve la cola a la clave nueva.
+    """
+    previous = list(mapping)[-1] if isinstance(mapping, CommentedMap) and len(mapping) else None
+    slot = _trailing_slot(mapping, previous) if previous is not None else None
+    tail = ""
+    if slot is not None and slot[0][slot[1]] is not None:
+        token = slot[0][slot[1]]
+        head, _, tail = token.value.partition("\n")
+        if tail:
+            token.value = head + "\n"
+    if isinstance(value, list) and not isinstance(value, CommentedSeq):
+        value = CommentedSeq(value)
+    mapping[key] = value
+    if tail:
+        new_slot = _trailing_slot(mapping, key)
+        if new_slot is not None:
+            new_slot[0][new_slot[1]] = CommentToken("\n" + tail, CommentMark(0), None)
+
+
 def _set_path(config: dict, path: str, value: Any) -> None:
     parts = path.split(".")
     cur = config
-    for part in parts[:-1]:
+    for i, part in enumerate(parts[:-1]):
         nxt = cur.get(part)
         if not isinstance(nxt, dict):
-            nxt = {}
-            cur[part] = nxt
+            # Se arma la rama completa y se agrega de una vez: así la cola de
+            # comentarios se mueve a su última hoja y no queda colgando de
+            # una sección todavía vacía.
+            branch: Any = value
+            for name in reversed(parts[i + 1:]):
+                node = CommentedMap()
+                node[name] = CommentedSeq(branch) if isinstance(branch, list) else branch
+                branch = node
+            _add_key(cur, part, branch)
+            return
         cur = nxt
-    cur[parts[-1]] = value
+    if parts[-1] in cur:
+        # Reemplazar una lista o un mapa descarta los comentarios que
+        # colgaban de su último elemento (el encabezado de la sección
+        # siguiente): se trasladan al valor nuevo.
+        old = _trailing_slot(cur, parts[-1])
+        token = old[0][old[1]] if old is not None else None
+        cur[parts[-1]] = CommentedSeq(value) if isinstance(value, list) else value
+        new = _trailing_slot(cur, parts[-1])
+        if token is not None and new is not None and new[0][new[1]] is None:
+            new[0][new[1]] = token
+    else:
+        _add_key(cur, parts[-1], value)
 
 
 def _coerce_list_int(raw: list, path: str) -> list[int]:
@@ -286,13 +355,33 @@ def _validate_geometry(config: dict) -> None:
             raise ValueError(f"los puntos de velocidad deben quedar dentro de 0..{width}")
 
 
-def _yaml() -> YAML:
+# Indentado de listas de config.example.yaml: `- x` dos espacios más adentro
+# que su clave. Producción usa listas sin indentar (`sequence=2, offset=0`).
+DEFAULT_SEQUENCE_INDENT = (4, 2)
+
+
+def _sequence_indent(text: str) -> tuple[int, int]:
+    """(sequence, offset) del archivo, para reescribirlo con su propio estilo.
+
+    Ningún valor fijo sirve para los dos estilos en uso: cada uno reformatea
+    todas las listas del otro (~60 líneas por guardado).
+    """
+    try:
+        _, sequence, offset = load_yaml_guess_indent(text)
+    except Exception:
+        return DEFAULT_SEQUENCE_INDENT
+    if sequence is None or offset is None:
+        return DEFAULT_SEQUENCE_INDENT
+    return sequence, offset
+
+
+def _yaml(sequence_indent: tuple[int, int] = DEFAULT_SEQUENCE_INDENT) -> YAML:
     yaml_rt = YAML()
     yaml_rt.preserve_quotes = True
-    # Mismo estilo que config.example.yaml: listas en bloque indentadas bajo
-    # su clave y `null` explícito. Si no, cada guardado reformateaba líneas
-    # que nadie tocó.
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    # Mismo estilo que el archivo: indentado de listas detectado y `null`
+    # explícito. Si no, cada guardado reformateaba líneas que nadie tocó.
+    sequence, offset = sequence_indent
+    yaml_rt.indent(mapping=2, sequence=sequence, offset=offset)
     yaml_rt.representer.add_representer(
         type(None), lambda rep, _: rep.represent_scalar("tag:yaml.org,2002:null", "null")
     )
@@ -386,12 +475,16 @@ def save_config(path: Path, config: Any) -> Path:
     backup = path.with_name(path.name + ".bak")
     with _write_lock:
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+        style = (
+            _sequence_indent(path.read_text(encoding="utf-8"))
+            if path.exists() else DEFAULT_SEQUENCE_INDENT
+        )
         fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
         os.close(fd)
         tmp = Path(tmp_name)
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
-                _yaml().dump(config, fh)
+                _yaml(style).dump(config, fh)
                 fh.flush()
                 os.fsync(fh.fileno())
             # Validar los bytes escritos tal como los leerá el servicio

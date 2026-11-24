@@ -129,6 +129,64 @@ class WriteTest(SettingsBase):
         # La config guardada arranca: pasa la validación del servicio.
         validate_config(load_config(self.path))
 
+    def test_each_list_style_survives_a_single_field_save(self):
+        # config.example.yaml indenta las listas bajo su clave; producción no
+        # (indentless). Guardar un campo no debe reformatear las listas.
+        for fixture in (PROJECT_DIR / "config.example.yaml",
+                        PROJECT_DIR / "tests" / "fixtures" / "config_prod_style.yaml"):
+            with self.subTest(fixture=fixture.name):
+                shutil.copy(fixture, self.path)
+                original = self.path.read_text(encoding="utf-8").splitlines()
+                response = self.post({"triggers.peak_db": 82.5})
+                self.assertEqual(response.status_code, 200, response.text)
+                text = self.path.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(len(text), len(original))
+                diff = [(a, b) for a, b in zip(original, text) if a != b]
+                self.assertEqual(diff, [(next(l for l in original if "peak_db:" in l),
+                                         next(l for l in text if "peak_db:" in l))])
+                self.assertIn("peak_db: 82.5", diff[0][1])
+
+    def test_new_keys_go_before_the_next_section_comment(self):
+        for fixture in (PROJECT_DIR / "config.example.yaml",
+                        PROJECT_DIR / "tests" / "fixtures" / "config_prod_style.yaml"):
+            with self.subTest(fixture=fixture.name):
+                shutil.copy(fixture, self.path)
+                original = self.path.read_text(encoding="utf-8").splitlines()
+                response = self.post({"triggers.noise_enabled": False,
+                                      "triggers.noise_schedule.enabled": True,
+                                      "triggers.noise_schedule.days": [5]})
+                self.assertEqual(response.status_code, 200, response.text)
+                text = self.path.read_text(encoding="utf-8").splitlines()
+                header = next(i for i, l in enumerate(text) if l.startswith("# Parámetros de video"))
+                for key in ("  noise_enabled:", "  noise_schedule:"):
+                    self.assertLess(next(i for i, l in enumerate(text) if l.startswith(key)), header, key)
+                # El contenido de noise_schedule queda entero arriba del encabezado,
+                # y el encabezado sigue pegado a su sección.
+                start = next(i for i, l in enumerate(text) if l.startswith("  noise_schedule:"))
+                body = [l for l in text[start + 1:header] if l.strip()]
+                self.assertTrue(body and all(l.startswith("    ") for l in body), body)
+                self.assertEqual(len(body), 3, body)  # enabled, days, - 5
+                self.assertEqual(text[header + 1], "video:")
+                # Lo único nuevo son las líneas agregadas; nada viejo cambia ni se pierde.
+                added = [l for l in text if l not in original]
+                self.assertEqual(len(text) - len(original), len(added), added)
+                self.assertEqual(self.on_disk()["triggers"]["noise_schedule"], {"enabled": True, "days": [5]})
+
+    def test_replacing_a_list_keeps_the_following_section_header(self):
+        for fixture in (PROJECT_DIR / "config.example.yaml",
+                        PROJECT_DIR / "tests" / "fixtures" / "config_prod_style.yaml"):
+            with self.subTest(fixture=fixture.name):
+                shutil.copy(fixture, self.path)
+                self.post({"tracker.record_classes": ["car", "bus"]})       # se agrega al final de tracker
+                before = self.path.read_text(encoding="utf-8").splitlines()
+                self.post({"tracker.record_classes": ["car", "truck"]})     # se reemplaza la lista
+                after = self.path.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(len(after), len(before))
+                diff = [(a, b) for a, b in zip(before, after) if a != b]
+                self.assertEqual(len(diff), 1, diff)
+                self.assertIn("truck", diff[0][1])
+                self.assertIn("# Clasificador de audio (YAMNet)", after)
+
     def test_backup_round_trip_restores_previous(self):
         original = self.path.read_bytes()
         self.post({"triggers.cooldown_seconds": 12})
