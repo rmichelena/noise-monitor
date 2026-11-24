@@ -162,18 +162,36 @@ class AudioMonitor:
         if not blocks:
             return None
         with self._lock:
-            history = dict(self._db_history)
-        values = [history[ts] for ts, _ in blocks if ts in history]
+            history = list(self._db_history)
+        # Multimapa: dos bloques pueden compartir timestamp (p. ej. modo
+        # archivo); un dict simple perdía uno en silencio.
+        by_timestamp: dict[float, list[float]] = {}
+        for ts, db in history:
+            by_timestamp.setdefault(ts, []).append(db)
+        values = []
+        for ts, _ in blocks:
+            pending = by_timestamp.get(ts)
+            if pending:
+                values.append(pending.pop(0))
         if not values:
             return None
-        if len(values) < len(blocks):
+        coverage = len(values) / len(blocks)
+        if coverage < 0.8:
+            logger.warning(
+                "Historial de niveles insuficiente para el clip: %d de %d bloques (%.0f%%)",
+                len(values), len(blocks), coverage * 100,
+            )
+            return None
+        if coverage < 1:
             logger.warning(
                 "Historial de niveles incompleto para el clip: %d de %d bloques",
                 len(values), len(blocks),
             )
         # Promedio energético (equivalente a LAeq sobre los bloques) y sin el
-        # piso de silencio digital, que de otro modo hunde la media.
-        audible = [value for value in values if value > MIN_DB]
+        # piso de silencio digital, que de otro modo hunde la media. El piso
+        # incluye el offset de calibración, porque db ya lo lleva aplicado.
+        floor = MIN_DB + self.calibration_offset
+        audible = [value for value in values if value > floor]
         average_source = audible or values
         energy = sum(10 ** (value / 10) for value in average_source) / len(average_source)
         return {"max": max(values), "avg": 10 * math.log10(energy), "count": len(values)}
@@ -216,7 +234,10 @@ class AudioMonitor:
 
         with self._lock:
             self._current_db = db
-        self._db_history.append((timestamp, db))
+            # El append va bajo el mismo lock que los lectores: iterar el
+            # deque mientras el callback lo modifica puede lanzar
+            # RuntimeError y tirar el evento completo.
+            self._db_history.append((timestamp, db))
 
         self._accumulate_level(db, timestamp)
 

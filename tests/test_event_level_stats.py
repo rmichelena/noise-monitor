@@ -44,19 +44,38 @@ class LevelStatsTests(unittest.TestCase):
     def test_silence_floor_does_not_sink_the_average(self):
         with tempfile.TemporaryDirectory() as directory:
             audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
-            audio._db_history.extend([(1.0, MIN_DB), (1.1, 40.0), (1.2, 50.0)])
+            floor = MIN_DB + audio.calibration_offset
+            audio._db_history.extend([(1.0, floor), (1.1, 40.0), (1.2, 50.0)])
             stats = audio.level_stats([(1.0, None), (1.1, None), (1.2, None)])
             self.assertEqual(stats["max"], 50.0)
             self.assertAlmostEqual(stats["avg"], energy_mean([40.0, 50.0]))
 
-    def test_incomplete_history_is_reported(self):
+    def test_insufficient_history_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
             audio._db_history.append((1.0, 40.0))
             with self.assertLogs("src.audio_monitor", level="WARNING") as logs:
                 stats = audio.level_stats([(1.0, None), (1.1, None)])
-            self.assertEqual(stats["count"], 1)
+            self.assertIsNone(stats)
+            self.assertTrue(any("insuficiente" in line for line in logs.output))
+
+    def test_partial_history_is_used_with_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            audio._db_history.extend((i / 10, 40.0) for i in range(9))
+            blocks = [(i / 10, None) for i in range(10)]
+            with self.assertLogs("src.audio_monitor", level="WARNING") as logs:
+                stats = audio.level_stats(blocks)
+            self.assertEqual(stats["count"], 9)
             self.assertTrue(any("incompleto" in line for line in logs.output))
+
+    def test_duplicate_timestamps_keep_both_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            audio._db_history.extend([(1.0, 40.0), (1.0, 50.0)])
+            stats = audio.level_stats([(1.0, None), (1.0, None)])
+            self.assertEqual(stats["max"], 50.0)
+            self.assertAlmostEqual(stats["avg"], energy_mean([40.0, 50.0]))
 
     def test_history_size_covers_configured_clip_window(self):
         with tempfile.TemporaryDirectory() as directory:
