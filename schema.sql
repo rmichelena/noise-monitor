@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS noise_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,           -- ISO 8601
     db_max REAL NOT NULL,              -- Nivel máximo ponderado A
-    db_avg REAL,                       -- Nivel promedio en ventana
+    db_avg REAL,                       -- Promedio energético dB(A) en ventana (excluye silencio digital)
     trigger_type TEXT,                 -- 'peak', 'sustained'
     sound_class TEXT,                  -- Clase YAMNet raw: 'Vehicle', 'Dog', 'Jackhammer', etc.
     sound_category TEXT,               -- Categoría agrupada: 'vehicle','construction','animal','alarm','human','other'

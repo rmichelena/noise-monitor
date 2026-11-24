@@ -6,6 +6,7 @@ Soporta modo device (micrófono real) y file (WAV para desarrollo simulado).
 """
 
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -20,7 +21,7 @@ import numpy as np
 from scipy.io import wavfile
 
 from .perceptual_trigger import PerceptualTrigger, Settings
-from .utils import apply_a_weighting, load_config, resolve_path, rms_to_db
+from .utils import MIN_DB, apply_a_weighting, load_config, resolve_path, rms_to_db
 
 if TYPE_CHECKING:
     import sounddevice as sd
@@ -125,9 +126,15 @@ class AudioMonitor:
         self._level_minute: int | None = None
         self._level_vals: list[float] = []
 
-        # Historial reciente de dB por bloque, para quemar el nivel en los
-        # clips: (timestamp, dB). 30 s a 10.8 bloques/s.
-        self._db_history: deque[tuple[float, float]] = deque(maxlen=600)
+        # Historial reciente de dB por bloque, para calcular el nivel de los
+        # clips: (timestamp, dB). Se dimensiona con la ventana real del clip
+        # (pre + post) más margen; un maxlen fijo podía dejar la estadística
+        # incompleta en ventanas largas sin avisar.
+        window_seconds = float(buffer_cfg.get("pre_event_seconds", 5)) + float(
+            buffer_cfg.get("post_event_seconds", 5)
+        )
+        history_len = max(600, int((window_seconds + 2) * self.sample_rate / self.block_size))
+        self._db_history: deque[tuple[float, float]] = deque(maxlen=history_len)
 
         self._perceptual_trigger = (
             PerceptualTrigger(settings, self.sample_rate, self.block_size, self.event_queue.put_nowait)
@@ -136,9 +143,11 @@ class AudioMonitor:
 
     def db_at(self, timestamp: float, tolerance: float = 2.0) -> float | None:
         """dB del bloque de audio más cercano al instante dado."""
-        if not self._db_history:
+        with self._lock:
+            history = list(self._db_history)
+        if not history:
             return None
-        best_ts, best_db = min(self._db_history, key=lambda item: abs(item[0] - timestamp))
+        best_ts, best_db = min(history, key=lambda item: abs(item[0] - timestamp))
         if abs(best_ts - timestamp) > tolerance:
             return None
         return best_db
@@ -152,11 +161,22 @@ class AudioMonitor:
         """
         if not blocks:
             return None
-        history = dict(self._db_history)
+        with self._lock:
+            history = dict(self._db_history)
         values = [history[ts] for ts, _ in blocks if ts in history]
         if not values:
             return None
-        return {"max": max(values), "avg": sum(values) / len(values), "count": len(values)}
+        if len(values) < len(blocks):
+            logger.warning(
+                "Historial de niveles incompleto para el clip: %d de %d bloques",
+                len(values), len(blocks),
+            )
+        # Promedio energético (equivalente a LAeq sobre los bloques) y sin el
+        # piso de silencio digital, que de otro modo hunde la media.
+        audible = [value for value in values if value > MIN_DB]
+        average_source = audible or values
+        energy = sum(10 ** (value / 10) for value in average_source) / len(average_source)
+        return {"max": max(values), "avg": 10 * math.log10(energy), "count": len(values)}
 
     @property
     def current_db(self) -> float:

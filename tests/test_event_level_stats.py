@@ -1,3 +1,4 @@
+import math
 import sqlite3
 import tempfile
 import time
@@ -10,9 +11,13 @@ import numpy as np
 
 from src.audio_monitor import AudioMonitor
 from src.event_manager import EventManager
-from src.utils import load_config
+from src.utils import MIN_DB, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def energy_mean(values):
+    return 10 * math.log10(sum(10 ** (value / 10) for value in values) / len(values))
 
 
 def example_config(directory: str) -> dict:
@@ -33,8 +38,33 @@ class LevelStatsTests(unittest.TestCase):
             ])
             stats = audio.level_stats([(1.0, None), (1.1, None), (1.2, None)])
             self.assertEqual(stats["max"], 50.0)
-            self.assertAlmostEqual(stats["avg"], 40.0)
+            self.assertAlmostEqual(stats["avg"], energy_mean([40.0, 50.0, 30.0]))
             self.assertEqual(stats["count"], 3)
+
+    def test_silence_floor_does_not_sink_the_average(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            audio._db_history.extend([(1.0, MIN_DB), (1.1, 40.0), (1.2, 50.0)])
+            stats = audio.level_stats([(1.0, None), (1.1, None), (1.2, None)])
+            self.assertEqual(stats["max"], 50.0)
+            self.assertAlmostEqual(stats["avg"], energy_mean([40.0, 50.0]))
+
+    def test_incomplete_history_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            audio._db_history.append((1.0, 40.0))
+            with self.assertLogs("src.audio_monitor", level="WARNING") as logs:
+                stats = audio.level_stats([(1.0, None), (1.1, None)])
+            self.assertEqual(stats["count"], 1)
+            self.assertTrue(any("incompleto" in line for line in logs.output))
+
+    def test_history_size_covers_configured_clip_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = example_config(directory)
+            config["buffer"].update(pre_event_seconds=20, post_event_seconds=20)
+            audio = AudioMonitor(config=config, base_dir=ROOT)
+            needed = 40 * audio.sample_rate / audio.block_size
+            self.assertGreaterEqual(audio._db_history.maxlen, needed)
 
     def test_missing_history_or_blocks_returns_none(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,7 +102,7 @@ class EventPersistenceTests(unittest.TestCase):
             with sqlite3.connect(Path(directory) / "events.db") as conn:
                 row, = conn.execute("SELECT db_max, db_avg FROM noise_events")
             self.assertAlmostEqual(row[0], 56.0)
-            self.assertAlmostEqual(row[1], (30.0 * 20 + 56.0) / 21)
+            self.assertAlmostEqual(row[1], energy_mean([30.0] * 20 + [56.0]))
 
     def test_keeps_trigger_level_when_history_is_missing(self):
         with tempfile.TemporaryDirectory() as directory:
