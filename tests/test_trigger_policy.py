@@ -610,6 +610,40 @@ class PassageGatingTest(unittest.TestCase):
         self.assertEqual(row["kind"], "both")
         self.assertEqual(row["audio_muted"], 1)
 
+    def test_upgrade_with_passage_clip_scans_noise_preroll(self):
+        # H2: pasaje [10.5, 11.5] con clip propio. Ese clip cubre [8.5, 13.5]
+        # y el disparo dBA mira ±0,97 s de los 10 s; la voz en [8.0, 8.4]
+        # (pre-roll del ruido) sólo la ve el escaneo de la unión.
+        em = self.manager_16k({})
+        self.with_real_classifier(em, voice_between=(8.0, 8.4))
+        self.passage(em, enter=10.5, exit_=11.5)
+        (traffic,) = self.rows()
+        self.assertTrue(traffic["clip_path"])
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["audio_muted"], 1)
+        self.assertTrue(self.clip_calls[0]["mute"])
+
+    def test_upgrade_union_failure_keeps_passage_clip_and_window(self):
+        # M3: con la unión fallida, el clip del pasaje (la evidencia con el
+        # vehículo) no se reemplaza por el sólo-ruido ni se borra.
+        em = self.manager({})
+        self.passage(em)
+        (traffic,) = self.rows()
+        self.fail_clip = {0}
+        with self.assertLogs("src.event_manager", "WARNING") as logs:
+            self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["sound_class"], "Car")
+        for key in ("clip_path", "start_ts", "end_ts", "duration_ms", "audio_muted"):
+            self.assertEqual(row[key], traffic[key], key)
+        self.assertTrue(Path(traffic["clip_path"]).exists())
+        self.assertEqual(len(self.clip_calls), 2, "unión fallida → fallback")
+        self.assertEqual(list(em.clips_dir.glob("event_*.mp4")), [], "fallback huérfano")
+        self.assertTrue(any(f"#{row['id']} sin clip unión" in m for m in logs.output), logs.output)
+
     # -- Fallos de la rama `both` nacida en memoria (M3) ------------------
     def test_memory_passage_union_failure_keeps_noise_and_releases_passage(self):
         em = self.manager({"traffic_enabled": False})

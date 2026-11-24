@@ -538,17 +538,15 @@ class EventManager:
         union_muted: bool,
         unique_name: bool,
         label: str,
-        check_speech: bool = False,
     ) -> tuple[str | None, int | None, bool, float, float, bool]:
         """Un solo clip para ruido + pasaje: [min(inicios), min(max(fines), ahora)].
 
         Si falla, cae al clip del ruido con su ventana. Devuelve
         (clip_path, duration_ms, audio_muted, start_ts, end_ts, union_ok);
         `union_ok` es False si el clip final no es la unión (sólo ruido, o
-        ninguno: clip_path None). `check_speech`: el tramo del pasaje no pasó
-        por ninguna detección de voz (no tuvo clip propio), así que se
-        clasifica la unión entera: el disparo dBA sólo miró ±0,97 s del pico,
-        y el pasaje suele caer dentro de la ventana del ruido.
+        ninguno: clip_path None). La unión se clasifica entera salvo que ya
+        venga muda: ninguna clasificación previa la cubre (el disparo dBA
+        mira ±0,97 s del pico; el clip del pasaje, sus últimos 5 s).
         """
         noise_start, noise_end = noise_window
         union_start = min(noise_start, passage["timestamp_enter"])
@@ -558,7 +556,7 @@ class EventManager:
         union_video = self._window_from_buffers(
             video_list, self.video_monitor.video_buffer, union_start, union_end)
         sample_rate = self.config["audio"]["sample_rate"]
-        if check_speech and not union_muted:
+        if not union_muted:
             union_muted = self._passage_has_speech(union_audio)
 
         clip_path, duration_ms, muted = None, None, union_muted
@@ -639,13 +637,21 @@ class EventManager:
         finally:
             conn.close()
 
-        clip_path, duration_ms, muted, start_ts, end_ts, _ = self._union_clip(
+        clip_path, duration_ms, muted, start_ts, end_ts, union_ok = self._union_clip(
             passage, audio_list, video_list, noise_window, fields["peak_ts"],
             union_muted=mute_audio or bool(passage_muted),
             unique_name=unique_name, label=f"#{event_id}",
-            # Sin clip propio, el audio del pasaje no pasó por la detección de voz.
-            check_speech=not old_clip,
         )
+        if not union_ok and old_clip:
+            # El clip del pasaje es la única evidencia con el vehículo: la
+            # fila conserva su clip y su ventana, y el fallback sólo-ruido no
+            # se usa. Los metadatos del ruido ya quedaron en el reclamo.
+            logger.warning(
+                "Evento #%d sin clip unión: conserva el del pasaje (%s)", event_id, old_clip,
+            )
+            if clip_path:
+                self._delete_replaced_clip(clip_path, "")
+            return event_id
         if not clip_path:
             logger.error(
                 "Evento #%d sin clip nuevo: conserva el del pasaje (%s)", event_id, old_clip or "none",
@@ -820,7 +826,6 @@ class EventManager:
                     passage, audio_list, video_list, (t_start, t_end), timestamp,
                     union_muted=mute_audio,
                     unique_name=perceptual, label=f"del pasaje {passage.get('track_id')}",
-                    check_speech=True,
                 )
             except Exception:
                 # Igual que el upgrade: nunca perder el evento acústico. Se

@@ -198,7 +198,10 @@ class UnifiedWriteTest(unittest.TestCase):
         self.assertEqual(row["kind"], "both")
         self.assertAlmostEqual(row["end_ts"], self.base + 18.0, places=3)
 
-    def test_fallo_del_clip_union_conserva_el_evento_con_clip_del_ruido(self):
+    def test_fallo_del_clip_union_conserva_el_clip_del_pasaje(self):
+        # El clip del pasaje es la única evidencia con el vehículo: si falla
+        # la unión, la fila lo conserva con su ventana y el fallback
+        # sólo-ruido se descarta (settings v2 S1 R3; antes lo reemplazaba).
         self._passage(3.0, 9.0)
         (traffic,) = self._rows()
         old_clip = Path(traffic["clip_path"])
@@ -211,10 +214,10 @@ class UnifiedWriteTest(unittest.TestCase):
         noise_call = self.clip_calls[1]
         self.assertAlmostEqual(min(noise_call["audio"]), self.base + 8.0, places=3)
         self.assertAlmostEqual(max(noise_call["audio"]), self.base + 12.0, places=3)
-        self.assertTrue(Path(row["clip_path"]).exists())
-        self.assertAlmostEqual(row["start_ts"], self.base + 8.0)
-        self.assertAlmostEqual(row["end_ts"], self.base + 12.0)
-        self.assertFalse(old_clip.exists())
+        for key in ("clip_path", "start_ts", "end_ts"):
+            self.assertEqual(row[key], traffic[key], key)
+        self.assertTrue(old_clip.exists())
+        self.assertFalse((self.em.clips_dir / "event_1.mp4").exists(), "fallback huérfano")
 
     def test_fallan_los_dos_clips_conserva_fila_y_clip_del_pasaje(self):
         self._passage(3.0, 9.0)
