@@ -326,14 +326,16 @@ class EventManager:
         if t_start >= t_end:
             return "", 0
 
+        # Copiar antes de iterar: los buffers los mutan los hilos de captura
+        # y un deque modificado durante la iteración lanza RuntimeError.
         audio_list = [
             (ts, block)
-            for ts, block in self.audio_monitor.audio_buffer
+            for ts, block in self.audio_monitor.audio_buffer.copy()
             if t_start <= ts <= t_end
         ]
         video_list = [
             (ts, frame)
-            for ts, frame in self.video_monitor.video_buffer
+            for ts, frame in self.video_monitor.video_buffer.copy()
             if t_start <= ts <= t_end
         ]
         if len(video_list) < 10 or not audio_list:
@@ -479,6 +481,9 @@ class EventManager:
         wait = t_end - time.time()
         audio_list = []
         video_list = []
+        # El historial se snapshotea junto al pre-roll: el deque sigue
+        # deslizándose durante el sleep y podía expulsar esos niveles.
+        level_history = self.audio_monitor.level_snapshot()
         if wait > 0:
             # Hold the pre-roll before waiting so that the ring cannot evict it.
             audio_list = [(ts, block) for ts, block in self.audio_monitor.audio_buffer.copy()
@@ -489,6 +494,10 @@ class EventManager:
             time.sleep(min(wait, self.post_seconds))
         audio_boundary = audio_list[-1][0] if audio_list else float("-inf")
         video_boundary = video_list[-1][0] if video_list else float("-inf")
+        level_boundary = level_history[-1][0] if level_history else float("-inf")
+        level_history.extend(
+            level for level in self.audio_monitor.level_snapshot() if level[0] > level_boundary
+        )
         audio_list.extend(
             (ts, block) for ts, block in self.audio_monitor.audio_buffer.copy()
             if t_start <= ts <= t_end and ts > audio_boundary
@@ -511,9 +520,11 @@ class EventManager:
 
         # db_max/db_avg describen el clip, no el bloque que disparó: el pico
         # real del pasaje suele llegar después del primer cruce del umbral.
-        level_stats = self.audio_monitor.level_stats(audio_list)
+        level_stats = self.audio_monitor.level_stats(audio_list, level_history)
         if level_stats:
-            db_max = level_stats["max"]
+            # Nunca por debajo del nivel que disparó: con cobertura parcial
+            # el bloque del trigger puede haber quedado fuera.
+            db_max = max(level_stats["max"], db_max)
             db_avg = level_stats["avg"]
         else:
             logger.warning(

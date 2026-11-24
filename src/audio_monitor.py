@@ -148,7 +148,16 @@ class AudioMonitor:
             return None
         return best_db
 
-    def level_stats(self, blocks: list[tuple[float, np.ndarray]]) -> dict | None:
+    def level_snapshot(self) -> list[tuple[float, float]]:
+        """Copia inmutable del historial de niveles para un evento."""
+        with self._lock:
+            return list(self._db_history)
+
+    def level_stats(
+        self,
+        blocks: list[tuple[float, np.ndarray]],
+        history: list[tuple[float, float]] | None = None,
+    ) -> dict | None:
         """Máximo y promedio dB(A) de los bloques que forman el clip.
 
         Usa el historial ya calculado (mismo A-weighting y offset que el
@@ -157,8 +166,8 @@ class AudioMonitor:
         """
         if not blocks:
             return None
-        with self._lock:
-            history = list(self._db_history)
+        if history is None:
+            history = self.level_snapshot()
         # Multimapa: dos bloques pueden compartir timestamp (p. ej. modo
         # archivo); un dict simple perdía uno en silencio.
         by_timestamp: dict[float, list[float]] = {}

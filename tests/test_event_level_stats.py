@@ -1,5 +1,6 @@
 import math
 import sqlite3
+from collections import deque
 import tempfile
 import time
 import unittest
@@ -88,9 +89,17 @@ class LevelStatsTests(unittest.TestCase):
             # dimensionado por buffer del maxlen fijo anterior.
             config["buffer"]["audio_seconds"] = 120
             audio = AudioMonitor(config=config, base_dir=ROOT)
-            needed = 120 * audio.sample_rate / audio.block_size
+            needed = int(120 * audio.sample_rate / audio.block_size)
+            self.assertGreater(audio._db_history.maxlen, 600)
             self.assertGreaterEqual(audio._db_history.maxlen, needed)
             self.assertEqual(audio._db_history.maxlen, audio.buffer_maxlen)
+
+    def test_explicit_history_snapshot_is_used(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            snapshot = [(1.0, 40.0), (1.1, 50.0)]
+            stats = audio.level_stats([(1.0, None), (1.1, None)], snapshot)
+            self.assertEqual(stats["max"], 50.0)
 
     def test_missing_history_or_blocks_returns_none(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +138,29 @@ class EventPersistenceTests(unittest.TestCase):
                 row, = conn.execute("SELECT db_max, db_avg FROM noise_events")
             self.assertAlmostEqual(row[0], 56.0)
             self.assertAlmostEqual(row[1], energy_mean([30.0] * 20 + [56.0]))
+
+    def test_partial_coverage_never_reports_below_trigger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager, audio, stamp = self._event(directory, history=True)
+            audio._db_history = deque(
+                (ts, 30.0) for ts, _ in list(audio._db_history)[:18]
+            )
+            manager._process_trigger({"type": "peak", "db": 43.0, "timestamp": stamp})
+            with sqlite3.connect(Path(directory) / "events.db") as conn:
+                row, = conn.execute("SELECT db_max FROM noise_events")
+            self.assertAlmostEqual(row[0], 43.0)
+
+    def test_level_history_is_snapshotted_across_the_post_roll_wait(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager, audio, stamp = self._event(directory, history=True)
+            pre = [(ts, db) for ts, db in audio._db_history if ts <= stamp]
+            post = [(ts, db) for ts, db in audio._db_history if ts > stamp]
+            audio.level_snapshot = Mock(side_effect=[pre, post])
+            audio.level_stats = Mock(return_value=None)
+            manager._process_trigger({"type": "peak", "db": 43.0, "timestamp": stamp})
+            passed = audio.level_stats.call_args.args[1]
+            self.assertEqual(passed[0][0], pre[0][0])
+            self.assertEqual(passed[-1][0], post[-1][0])
 
     def test_keeps_trigger_level_when_history_is_missing(self):
         with tempfile.TemporaryDirectory() as directory:
