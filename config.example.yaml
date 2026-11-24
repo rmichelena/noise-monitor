@@ -27,6 +27,25 @@ triggers:
   sustained_duration_ms: 1500 # Tiempo mínimo sobre umbral
   correlation_db: 65         # Umbral si hay vehículo visible
   cooldown_seconds: 30       # Espaciado mínimo entre eventos guardados
+  # Qué secciones generan eventos. Editable desde /settings (ver README).
+  noise_enabled: true            # false: no hay disparos de ruido (la captura y audio_levels siguen)
+  noise_only_with_traffic: false # true: descarta el ruido sin un pasaje asociado (exige traffic_enabled)
+  traffic_enabled: true          # false: los pasajes no se guardan solos; un ruido aún puede guardarlos como `both`
+  traffic_only_with_noise: false # true: un pasaje sólo se guarda si un ruido lo reclama (exige noise_enabled)
+  # Horario por sección, en hora local. Con enabled: false la sección está siempre activa.
+  # Si start > end la ventana cruza la medianoche y cuenta el día en que empieza;
+  # el fin es exclusivo. days: días ISO (1 = lunes … 7 = domingo); vacío = todos.
+  # Las horas van entre comillas: sin ellas YAML 1.1 lee 19:00 como el entero 1140.
+  noise_schedule:
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+    days: []
+  traffic_schedule:
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+    days: []                     # p. ej. [5, 6]: noches de viernes y sábado
 
 # Parámetros de video (cámara USB ELP vía OpenCV)
 video:
@@ -87,6 +106,9 @@ tracker:
   min_track_seconds: 0.3
   min_displacement: 267
   max_track_seconds: 15
+  # Clases que se guardan como `traffic`. Las demás siguen rastreándose y un
+  # ruido puede reclamarlas como `both`. En /settings, motos y bicis van juntas.
+  record_classes: [car, truck, bus, motorcycle, bicycle]
 
 # Clasificador de audio (YAMNet)
 audio_classifier:

@@ -47,6 +47,9 @@ Implementado además:
 - Dashboard web (`web/`, FastAPI + Jinja2) servido por el propio pipeline en
   el puerto 8000: nivel en vivo, fondo sonoro por minuto, contadores del día,
   últimos eventos y clips.
+- Ajustes editables desde el navegador (`/settings`, con contraseña):
+  disparadores de ruido y tráfico, horarios y clases a grabar. Ver
+  [Ajustes desde el navegador](#ajustes-desde-el-navegador-settings).
 - Reporte de turno (`scripts/nightly_report.py`) publicado a diario en Buzz
   mediante `noise-report.timer`.
 
@@ -102,6 +105,83 @@ clave ausente o un valor imposible detiene el proceso con un mensaje que nombra
 corto que la ventana del clip, `speed.enabled` sin `reference_left_x` /
 `reference_right_x`) salen por el log sin impedir el arranque. Ambos ejemplos
 versionados son configuraciones completas y válidas.
+
+### Ajustes desde el navegador (`/settings`)
+
+`http://<host>:8000/settings` edita el criterio de ruido (dBA o psicoacústico,
+con su calibración) y sus umbrales, los disparadores y sus horarios, el tracker,
+la retención, el detector y la geometría de detección (ROI, filtro y referencias de
+velocidad, dibujadas sobre un frame de la cámara). El resto del dashboard sigue
+público; los ajustes piden Basic auth:
+
+- `NOISE_SETTINGS_PASSWORD` (obligatoria). Sin ella, `/settings` y
+  `/api/settings*` responden **503**: la edición queda apagada, no abierta.
+- `NOISE_SETTINGS_USER` (opcional, por defecto `admin`).
+
+Las variables van en el entorno del servicio. Para no dejar la contraseña en el
+unit (que `systemctl show` muestra a cualquier usuario), usar un archivo
+legible sólo por root:
+
+```bash
+sudo install -m 600 /dev/null /etc/noise-monitor/settings.env   # crear /etc/noise-monitor antes
+sudoedit /etc/noise-monitor/settings.env    # NOISE_SETTINGS_PASSWORD=...
+sudo systemctl edit noise-monitor           # [Service] EnvironmentFile=/etc/noise-monitor/settings.env
+sudo systemctl restart noise-monitor
+```
+
+Por la red local el dashboard es HTTP plano y Basic auth manda la contraseña
+sin cifrar; desde afuera conviene entrar por el túnel HTTPS (ver Operación).
+
+**Guardar.** Sólo se aceptan los campos del esquema de la página; cualquier otra
+ruta, un tipo inválido o una combinación incoherente (por ejemplo
+`noise_only_with_traffic` con el tráfico apagado) responde 400 y no se escribe
+nada. Antes de reemplazar `config.yaml`, la config completa se valida y el
+archivo escrito se vuelve a leer con el mismo loader del servicio. El
+reemplazo es atómico y la versión anterior queda en `config.yaml.bak`. Se
+conservan los comentarios y el estilo de listas del archivo: guardar un campo
+cambia sólo sus líneas. Un guardado sin cambios no toca el archivo.
+
+Los cambios **se aplican al reiniciar** el servicio
+(`sudo systemctl restart noise-monitor`): los monitores leen la configuración
+al arrancar. Para volver atrás, copiar `config.yaml.bak` sobre `config.yaml` y
+reiniciar.
+
+### Disparadores: qué se graba y cuándo
+
+Todas las claves son opcionales; ausentes equivalen a los valores del ejemplo
+(ruido y tráfico habilitados todo el día, todas las clases).
+
+| Clave | Efecto |
+|---|---|
+| `triggers.noise_enabled` | `false`: no hay disparos de ruido. La captura, el nivel en vivo y `audio_levels` siguen. |
+| `triggers.noise_only_with_traffic` | Descarta el ruido que no tiene un pasaje asociado. Exige `traffic_enabled`. |
+| `triggers.traffic_enabled` | `false`: los pasajes no se guardan solos (`traffic`). El tracker sigue y un ruido puede reclamar el pasaje como `both`. |
+| `triggers.traffic_only_with_noise` | Un pasaje sólo se guarda si un ruido lo reclama (`both`). Exige `noise_enabled`. |
+| `tracker.record_classes` | Clases que se guardan como `traffic`. En la página, motos y bicis van en una sola casilla porque el detector las confunde. |
+| `triggers.noise_schedule`, `triggers.traffic_schedule` | Horario de cada sección; fuera de él se comporta como apagada. |
+
+Un pasaje que no se guarda por sí mismo (tráfico apagado, fuera de horario,
+clase excluida o `traffic_only_with_noise`) sigue en memoria para la
+correlación: el ruido lo puede reclamar y el evento se guarda como `both`.
+Por eso `noise_only_with_traffic` correlaciona con cualquier pasaje rastreado,
+aunque el tráfico esté fuera de su horario.
+
+Horarios (`{enabled, start, end, days}`), en hora local del nodo:
+
+- `enabled: false` (o la clave ausente): la sección está siempre activa.
+- `start`/`end` en `HH:MM`, **entre comillas** en el YAML: sin ellas el loader
+  del servicio lee `19:00` como el entero 1140. La página las escribe así.
+- El fin es exclusivo: `22:00`–`07:00` está activa a las 06:59 y no a las 07:00.
+  `start` igual a `end` es un error (ventana vacía).
+- Si `start` es mayor que `end`, la ventana cruza la medianoche y **cuenta el
+  día en que empieza**: con `days: [5]`, `22:00`–`07:00` cubre del viernes
+  22:00 al sábado 07:00.
+- `days`: días ISO, 1 = lunes … 7 = domingo. Lista vacía o ausente = todos.
+  Cualquier otro valor (`false`, `0`, `""`) es un error, no «todos los días».
+
+Una clave desconocida dentro de `triggers` o `tracker` (por ejemplo
+`noise_enable`) detiene el arranque con un error que la nombra: un typo no puede
+dejar encendida una sección que se quería apagar.
 
 ## Modelo de detección de video
 

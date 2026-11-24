@@ -28,6 +28,8 @@ from web.app import create_app  # noqa: E402
 from web.settings import FIELD_MAP, apply_updates, read_config  # noqa: E402
 
 AUTH = ("admin", "test-pass")
+OLD_INDENTED = PROJECT_DIR / "tests" / "fixtures" / "config_indented_style.yaml"
+OLD_INDENTLESS = PROJECT_DIR / "tests" / "fixtures" / "config_prod_style.yaml"
 COMMENT = "# Detector: \"ssd\" (histórico 300x300) o \"yolo\" (160x640, sin deformación)."
 
 
@@ -117,7 +119,8 @@ class AuthTest(SettingsBase):
 
 class ReadTest(SettingsBase):
     def test_old_config_reads_defaults(self):
-        # config.example.yaml todavía no tiene las claves nuevas (S3).
+        # Una config previa a las claves de disparadores lee los defaults.
+        shutil.copy(OLD_INDENTED, self.path)
         values = self.client.get("/api/settings", auth=AUTH).json()["values"]
         self.assertIs(values["triggers.noise_enabled"], True)
         self.assertIs(values["triggers.traffic_enabled"], True)
@@ -186,8 +189,7 @@ class WriteTest(SettingsBase):
                 self.assertIn("peak_db: 82.5", diff[0][1])
 
     def test_new_keys_go_before_the_next_section_comment(self):
-        for fixture in (PROJECT_DIR / "config.example.yaml",
-                        PROJECT_DIR / "tests" / "fixtures" / "config_prod_style.yaml"):
+        for fixture in (OLD_INDENTED, OLD_INDENTLESS):
             with self.subTest(fixture=fixture.name):
                 shutil.copy(fixture, self.path)
                 original = self.path.read_text(encoding="utf-8").splitlines()
@@ -212,8 +214,7 @@ class WriteTest(SettingsBase):
                 self.assertEqual(self.on_disk()["triggers"]["noise_schedule"], {"enabled": True, "days": [5]})
 
     def test_replacing_a_list_keeps_the_following_section_header(self):
-        for fixture in (PROJECT_DIR / "config.example.yaml",
-                        PROJECT_DIR / "tests" / "fixtures" / "config_prod_style.yaml"):
+        for fixture in (OLD_INDENTED, OLD_INDENTLESS, PROJECT_DIR / "config.example.yaml"):
             with self.subTest(fixture=fixture.name):
                 shutil.copy(fixture, self.path)
                 self.post({"tracker.record_classes": ["car", "bus"]})       # se agrega al final de tracker
@@ -257,6 +258,7 @@ class WriteTest(SettingsBase):
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_new_types_are_saved_normalized(self):
+        shutil.copy(OLD_INDENTED, self.path)  # sin las claves: se agregan
         response = self.post({
             "triggers.traffic_enabled": True,
             "triggers.traffic_schedule.enabled": True,
@@ -340,6 +342,10 @@ class RejectTest(SettingsBase):
         # rechaza en vez de dejar un config.yaml con el que no arranca.
         import web.settings as settings
 
+        # Con la clave ya escrita entre comillas, ruamel conserva las comillas
+        # (preserve_quotes): el caso que llega a la segunda barrera es la
+        # clave nueva, en una config que todavía no la tiene.
+        shutil.copy(OLD_INDENTED, self.path)
         with mock.patch.object(settings, "DoubleQuotedScalarString", str):
             self.assert_rejected(
                 {"triggers.traffic_schedule.end": "19:00"}, "no sería válido.*traffic_schedule.end",
@@ -518,6 +524,19 @@ class SchemaTest(unittest.TestCase):
             key = path.rsplit(".", 1)[-1]
             with self.subTest(path=path):
                 self.assertIn(key, sources)
+
+    def test_example_declares_trigger_keys_with_their_defaults(self):
+        # El ejemplo documenta cada clave de disparadores sin cambiar el
+        # comportamiento: su política es la misma que la de una config sin ellas.
+        from src.trigger_policy import _BOOL_KEYS, TriggerPolicy
+
+        cfg = load_config(PROJECT_DIR / "config.example.yaml")
+        for key in (*_BOOL_KEYS, "noise_schedule", "traffic_schedule"):
+            with self.subTest(key=key):
+                self.assertIn(key, cfg["triggers"])
+        self.assertIn("record_classes", cfg["tracker"])
+        self.assertEqual(TriggerPolicy.from_config(cfg), TriggerPolicy())
+        self.assertEqual(TriggerPolicy.from_config(load_config(OLD_INDENTED)), TriggerPolicy())
 
     def test_apply_validates_the_whole_config(self):
         # Primera barrera, antes de tocar el disco; save_config re-valida los bytes.

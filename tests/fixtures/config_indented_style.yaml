@@ -1,0 +1,156 @@
+# Estilo indentado y sin las claves de disparadores: config.example.yaml antes de S3.
+# Ejemplo de configuración para hardware real (copia a config.yaml y ajusta).
+# config.yaml está en .gitignore: cada nodo mantiene su configuración local.
+# Para el modo simulado sin balcón, ver config.simulate.yaml.example.
+
+# Parámetros de audio
+audio:
+  source: device              # "device" = micrófono real, "file" = WAV (modo simulado)
+  device_index: 5             # iMM-6C (verificar con sounddevice.query_devices())
+  file_path: null             # Ruta al .wav cuando source=file (ej: data/test_videos/traffic_xxx_audio.wav)
+  sample_rate: 44100
+  block_size: 4096            # ~93ms por bloque (evita input overflow)
+  calibration_offset: 0.0     # dB a sumar tras calibración
+  # Para triggers.criterion: psychoacoustic, escala del PCM crudo a Pa.
+  # pressure_calibration: {id: dayton-ajuste-01, pa_per_unit: null}
+
+# Umbrales de disparo
+triggers:
+  criterion: dba             # dba | psychoacoustic
+  # psychoacoustic:
+  #   metric: loudness_mean  # sones (recomendado para piloto) | annoyance_pa (PA experimental)
+  #   threshold: null       # configurar con el umbral operativo de la métrica elegida
+  #   window_seconds: 3
+  #   hop_seconds: 1.5
+  #   queue_size: 8           # eventos en espera del worker de clips
+  peak_db: 85                 # Disparo instantáneo
+  sustained_db: 70            # Umbral de persistencia
+  sustained_duration_ms: 1500 # Tiempo mínimo sobre umbral
+  correlation_db: 65         # Umbral si hay vehículo visible
+  cooldown_seconds: 30       # Espaciado mínimo entre eventos guardados
+
+# Parámetros de video (cámara USB ELP vía OpenCV)
+video:
+  source: 0                   # Índice del dispositivo USB (o "/dev/video0")
+  resolution: [1280, 720]   # 720p: menos CPU, RAM y ancho de banda
+  framerate: 30
+  inference_interval: 2       # Procesar 1 de cada N frames
+  overlay_db: true         # quemar fecha/hora y dB en los clips
+  overlay_every_frames: 5  # refrescar el dB cada N frames
+  detection_threshold: 0.12   # recall; con 0.35 se perdían autos oscuros
+  detection_roi: [0, 150, 1280, 460]   # recorte de inferencia: contexto sin el balcón
+  detection_filter: [0, 220, 1280, 400]  # zona válida (calzada): descarta balcón, árboles y vereda
+  detection_min_width: 24      # px a 720p; cajas más chicas son ruido
+  detection_max_width: 600     # px (bus largo); el SSD inventa cajas de 800 px
+  detection_min_height: 14
+  detection_max_height: 300
+  detection_min_aspect: 0.5
+  detection_max_aspect: 6.0
+  overlay_classes: [car, truck, bus, motorcycle, bicycle]  # cajas en la vista en vivo
+  # Detector: "ssd" (histórico 300x300) o "yolo" (160x640, sin deformación).
+  detector: ssd
+  yolo_model_path: models/yolo11n_160x640_edgetpu.tflite
+  yolo_threshold: 0.25       # umbral propio de YOLO (el 0.12 es del SSD)
+  yolo_nms_iou: 0.45
+  yolo_max_det: 100          # cajas finales por frame
+  yolo_max_candidates: 300   # top-K antes de NMS
+
+# Buffer circular
+buffer:
+  audio_seconds: 10
+  video_seconds: 10
+  pre_event_seconds: 5
+  post_event_seconds: 5
+
+# Estimación de velocidad: dos referencias verticales sobre la pista.
+# `scripts/reference_frame.py` imprime un frame con las líneas para leer las X.
+speed:
+  enabled: true
+  reference_left_x: 300       # Coordenada X (px) de la referencia izquierda
+  reference_right_x: 900      # Coordenada X (px) de la referencia derecha
+  reference_distance_m: 10.0  # Distancia real entre ambas referencias (m)
+
+# Rutas (relativas al directorio del proyecto)
+paths:
+  database: data/events.db
+  clips: data/clips
+  reports: reports
+
+# Dashboard web
+web:
+  host: 0.0.0.0
+  port: 8000
+
+# Centroid tracker para registro continuo de vehículos
+tracker:
+  max_distance: 120
+  max_disappeared: 20     # inference frames sin ver antes de marcar como salido (~3.3s @ 6fps)
+  min_track_seconds: 0.3
+  min_displacement: 267
+  max_track_seconds: 15
+
+# Clasificador de audio (YAMNet)
+audio_classifier:
+  backend: cpu                 # cpu | coral (scripts/download_yamnet.sh --coral)
+  model_path: models/yamnet.tflite
+  coral_model_path: models/yamnet_edgetpu.tflite
+  fallback_to_cpu: true        # si Coral falla, usar CPU hasta el próximo reinicio
+  labels_path: models/yamnet_labels.txt
+  min_score: 0.3
+  category_map:
+    vehicle:
+      - Vehicle
+      - Car
+      - Truck
+      - Motorcycle
+      - Bus
+      - Engine
+      - "Accelerating, revving, vroom"
+      - Tire squeal
+      - "Car horn, honking"
+    construction:
+      - Jackhammer
+      - Chainsaw
+      - Power tool
+      - Drill
+      - Sawing
+      - Hammer
+    animal:
+      - Dog
+      - Bark
+      - Cat
+      - Bird
+      - Rooster
+    alarm:
+      - Siren
+      - Alarm
+      - Emergency vehicle
+      - Buzzer
+      - Fire alarm
+      - Smoke detector
+    human:
+      - Speech
+      - Shout
+      - Screaming
+      - Music
+      - Singing
+
+# Modo simulado (Fase 0.5: desarrollo sin balcón)
+debug:
+  simulate: false             # true = video/audio de archivo, false = cámara y micrófono real
+  loop_video: true           # reiniciar video al terminar (solo si source es archivo)
+  audio_from_video: false    # true = leer audio de archivo .wav, false = usar micrófono
+
+# Jerarquía de ruido para inferencia
+noise_priority:
+  truck: 1
+  bus: 1
+  motorcycle: 2
+  car: 3
+  bicycle: 4
+  person: 5
+
+# Retención de datos (scripts/purge.py, timer semanal)
+retention:
+  clip_days: 30
+  levels_days: 400
