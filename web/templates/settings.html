@@ -318,6 +318,23 @@ document.querySelectorAll('[data-toggle]').forEach(group => {
   const box = group.querySelector(`[data-path="${CSS.escape(group.dataset.toggle)}"]`);
   box.addEventListener('change', () => group.classList.toggle('off', !box.checked));
 });
+// Al cambiar de métrica, los tiempos que seguían en el default de la anterior
+// pasan al de la nueva (PA necesita ~5,6 s de latencia, no 1,6). Un valor
+// editado a mano se respeta.
+const metricBox = getInputs('triggers.psychoacoustic.metric')[0];
+if (metricBox) {
+  let previousMetric = metricBox.value;
+  metricBox.addEventListener('change', () => {
+    const before = PAYLOAD.psycho_timing[previousMetric], after = PAYLOAD.psycho_timing[metricBox.value];
+    if (before && after) {
+      for (const key of Object.keys(after)) {
+        const el = getInputs(`triggers.psychoacoustic.${key}`)[0];
+        if (el && Number(el.value) === before[key]) el.value = after[key];
+      }
+    }
+    previousMetric = metricBox.value;
+  });
+}
 document.querySelectorAll('[data-partial]').forEach(el => { el.indeterminate = true; });
 
 let INITIAL = null;

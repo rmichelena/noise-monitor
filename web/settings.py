@@ -47,6 +47,17 @@ CLASS_GROUPS: list[dict[str, Any]] = [
 ]
 assert {c for g in CLASS_GROUPS for c in g["classes"]} == set(VEHICLE_CLASSES)
 
+# Defaults de tiempo por métrica: los mismos que aplica
+# `perceptual_trigger.Settings.load` cuando la clave falta. PA tarda ~5,6 s por
+# ventana; con los de loudness el trigger acumularía ventanas y descartaría.
+PSYCHO_TIMING: dict[str, dict[str, float]] = {
+    "loudness_mean": {"window_seconds": 3.0, "hop_seconds": 1.5, "expected_latency_seconds": 1.6},
+    "annoyance_pa": {"window_seconds": 2.0, "hop_seconds": 2.0, "expected_latency_seconds": 5.6},
+}
+# Con criterio psicoacústico, la calibración es obligatoria: se escribe aunque
+# coincida con el default (Settings.load no acepta que falte).
+PSYCHO_REQUIRED = ("audio.pressure_calibration.id", "audio.pressure_calibration.pa_per_unit")
+
 DAYS = [[1, "Lun"], [2, "Mar"], [3, "Mié"], [4, "Jue"], [5, "Vie"], [6, "Sáb"], [7, "Dom"]]
 
 
@@ -406,16 +417,30 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _metric(config: dict) -> str:
+    metric = _get_path(config, "triggers.psychoacoustic.metric")
+    return metric if metric in PSYCHO_TIMING else "loudness_mean"
+
+
+def _default(config: dict, path: str) -> Any:
+    """Default de un campo; los tiempos psicoacústicos dependen de la métrica."""
+    key = path.rsplit(".", 1)[-1]
+    if path.startswith("triggers.psychoacoustic.") and key in PSYCHO_TIMING["loudness_mean"]:
+        return PSYCHO_TIMING[_metric(config)][key]
+    return FIELD_MAP[path].get("default")
+
+
 def public_payload(config: dict) -> dict:
     values = {}
-    for path, field in FIELD_MAP.items():
+    for path in FIELD_MAP:
         value = _get_path(config, path)
-        values[path] = _plain(field.get("default") if value is None else value)
+        values[path] = _plain(_default(config, path) if value is None else value)
     return {
         "groups": FIELD_GROUPS,
         "values": values,
         "class_groups": CLASS_GROUPS,
         "days": DAYS,
+        "psycho_timing": PSYCHO_TIMING,
     }
 
 
@@ -438,20 +463,29 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
     if unknown:
         raise ValueError(f"campos no editables: {unknown}")
     changed = []
+    # Lo que la página mostraba para un campo ausente: el default con la config
+    # previa (la métrica de antes, para los tiempos psicoacústicos).
+    shown = {path: _default(config, path) for path in updates}
     for path, raw in updates.items():
         field = FIELD_MAP[path]
         value = _coerce(field, raw, path)
         current = _get_path(config, path)
-        if current is None and _same(field, value, field.get("default")):
+        if current is None and _same(field, value, shown[path]):
             continue  # ausente y con su default: sigue ausente
         if current is None or not _same(field, _plain(current), value):
             _set_path(config, path, value)
             changed.append(path)
     criterion = str((config.get("triggers") or {}).get("criterion", "dba"))
     if criterion == "psychoacoustic":
-        for path, field in FIELD_MAP.items():
-            if path.startswith("triggers.psychoacoustic.") and _get_path(config, path) is None:
-                _set_path(config, path, field.get("default"))
+        # Settings.load exige estos valores: se completan con los defaults de
+        # la métrica elegida (un valor salteado arriba era justo ese default).
+        for path in FIELD_MAP:
+            if not (path.startswith("triggers.psychoacoustic.") or path in PSYCHO_REQUIRED):
+                continue
+            if _get_path(config, path) is not None:
+                continue
+            _set_path(config, path, _default(config, path))
+            changed.append(path)
     detector = str((config.get("video") or {}).get("detector", "ssd")).lower()
     if detector not in DETECTORS:
         raise ValueError(f"video.detector debe ser ssd|yolo (recibido: {detector!r})")
@@ -465,7 +499,16 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
     # y coherencia de flags se validan sobre la config completa resultante.
     validate_config(config, base_dir=base_dir)
     _validate_geometry(config)
-    Settings.load(config)
+    if Settings.load(config) is not None:
+        # main.py sale con 78 (sin reinicio) si falta la dependencia: mejor
+        # rechazar el guardado que dejar un servicio que no arranca.
+        try:
+            import phonometry  # noqa: F401
+        except ImportError as exc:
+            raise ValueError(
+                "el criterio psicoacústico requiere phonometry (requirements-trigger.txt) "
+                "en el entorno del servicio"
+            ) from exc
     return config, changed
 
 

@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -349,6 +350,159 @@ class RejectTest(SettingsBase):
                                     headers={"Content-Type": "application/json"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.post(["triggers.peak_db"]).status_code, 400)
+
+
+PHONOMETRY = mock.patch.dict(sys.modules, {"phonometry": types.ModuleType("phonometry")})
+NO_PHONOMETRY = mock.patch.dict(sys.modules, {"phonometry": None})  # import → ImportError
+
+
+class PsychoacousticTest(SettingsBase):
+    """Activar el criterio psicoacústico desde la página, en un nodo fresco."""
+
+    def setUp(self):
+        super().setUp()
+        # PA necesita más margen de buffer que el ejemplo (10 s con pre=5).
+        text = self.path.read_text(encoding="utf-8")
+        text = text.replace("audio_seconds: 10", "audio_seconds: 16").replace("video_seconds: 10", "video_seconds: 16")
+        self.path.write_text(text, encoding="utf-8")
+
+    def form(self, metric, **overrides):
+        # Lo que manda la página: los valores mostrados (defaults de loudness
+        # para la config del ejemplo, que no tiene la sección).
+        values = {
+            "triggers.criterion": "psychoacoustic",
+            "triggers.psychoacoustic.metric": metric,
+            "triggers.psychoacoustic.threshold": 20.0,
+            "triggers.psychoacoustic.window_seconds": 3.0,
+            "triggers.psychoacoustic.hop_seconds": 1.5,
+            "triggers.psychoacoustic.expected_latency_seconds": 1.6,
+            "audio.pressure_calibration.id": "cal-1",
+            "audio.pressure_calibration.pa_per_unit": 1.0,
+        }
+        values.update(overrides)
+        return values
+
+    def test_annoyance_pa_gets_its_own_timing_defaults(self):
+        with PHONOMETRY:
+            response = self.post(self.form("annoyance_pa"))
+        self.assertEqual(response.status_code, 200, response.text)
+        psycho = self.on_disk()["triggers"]["psychoacoustic"]
+        self.assertEqual((psycho["window_seconds"], psycho["hop_seconds"], psycho["expected_latency_seconds"]),
+                         (2.0, 2.0, 5.6))
+
+    def test_loudness_keeps_its_timing_defaults(self):
+        with PHONOMETRY:
+            response = self.post(self.form("loudness_mean"))
+        self.assertEqual(response.status_code, 200, response.text)
+        psycho = self.on_disk()["triggers"]["psychoacoustic"]
+        self.assertEqual((psycho["window_seconds"], psycho["hop_seconds"], psycho["expected_latency_seconds"]),
+                         (3.0, 1.5, 1.6))
+
+    def test_edited_timing_is_respected(self):
+        with PHONOMETRY:
+            response = self.post(self.form("annoyance_pa", **{
+                "triggers.psychoacoustic.expected_latency_seconds": 6.0}))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.on_disk()["triggers"]["psychoacoustic"]["expected_latency_seconds"], 6.0)
+
+    def test_switching_back_to_loudness_drops_the_pa_defaults_shown(self):
+        # La página mostraba los tiempos de PA (la métrica configurada); el
+        # usuario cambia a loudness sin tocarlos: valen los de loudness.
+        cfg = self.on_disk()
+        cfg["triggers"]["psychoacoustic"] = {"metric": "annoyance_pa"}
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        with PHONOMETRY:
+            response = self.post(self.form("loudness_mean", **{
+                "triggers.psychoacoustic.window_seconds": 2.0,
+                "triggers.psychoacoustic.hop_seconds": 2.0,
+                "triggers.psychoacoustic.expected_latency_seconds": 5.6}))
+        self.assertEqual(response.status_code, 200, response.text)
+        psycho = self.on_disk()["triggers"]["psychoacoustic"]
+        self.assertEqual((psycho["window_seconds"], psycho["hop_seconds"], psycho["expected_latency_seconds"]),
+                         (3.0, 1.5, 1.6))
+
+    def test_page_shows_the_defaults_of_the_configured_metric(self):
+        cfg = self.on_disk()
+        cfg["triggers"]["psychoacoustic"] = {"metric": "annoyance_pa"}
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        values = self.client.get("/api/settings", auth=AUTH).json()["values"]
+        self.assertEqual(values["triggers.psychoacoustic.expected_latency_seconds"], 5.6)
+        self.assertEqual(values["triggers.psychoacoustic.window_seconds"], 2.0)
+
+    def test_timing_defaults_match_the_trigger(self):
+        # PSYCHO_TIMING repite los defaults de Settings.load: si divergen, la
+        # página escribiría otra cosa que la que el trigger usa sin la clave.
+        from src.perceptual_trigger import Settings
+        from web.settings import PSYCHO_TIMING
+
+        cfg = load_config(self.path)
+        cfg["triggers"]["criterion"] = "psychoacoustic"
+        cfg["audio"]["pressure_calibration"] = {"id": "x", "pa_per_unit": 1.0}
+        for metric, timing in PSYCHO_TIMING.items():
+            with self.subTest(metric=metric):
+                cfg["triggers"]["psychoacoustic"] = {"metric": metric, "threshold": 1.0}
+                settings = Settings.load(cfg)
+                self.assertEqual((settings.window_seconds, settings.hop_seconds),
+                                 (timing["window_seconds"], timing["hop_seconds"]))
+
+    def test_calibration_default_is_written_on_a_fresh_node(self):
+        # pa_per_unit = 1.0 es el default del campo; antes se salteaba por
+        # «ausente + default» y Settings.load rechazaba la config: 400 siempre.
+        with PHONOMETRY:
+            response = self.post(self.form("loudness_mean"))
+        self.assertEqual(response.status_code, 200, response.text)
+        calibration = self.on_disk()["audio"]["pressure_calibration"]
+        self.assertEqual(calibration, {"id": "cal-1", "pa_per_unit": 1.0})
+        self.assertIn("audio.pressure_calibration.pa_per_unit", response.json()["changed"])
+
+    def test_missing_calibration_id_is_rejected(self):
+        before = self.path.read_bytes()
+        with PHONOMETRY:
+            response = self.post(self.form("loudness_mean", **{"audio.pressure_calibration.id": ""}))
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("pressure_calibration.id", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_without_phonometry_nothing_is_written(self):
+        before = self.path.read_bytes()
+        with NO_PHONOMETRY:
+            response = self.post(self.form("loudness_mean"))
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("phonometry", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse((self.dir / "config.yaml.bak").exists())
+
+    def test_dba_does_not_need_phonometry(self):
+        with NO_PHONOMETRY:
+            self.assertEqual(self.post({"triggers.peak_db": 80}).status_code, 200)
+
+
+class DetectionSizeTest(SettingsBase):
+    def test_min_above_max_is_rejected_on_save(self):
+        for updates in ({"video.detection_min_width": 700},          # max del ejemplo: 600
+                        {"video.detection_max_height": 10},          # min del ejemplo: 14
+                        {"video.detection_min_width": 50, "video.detection_max_width": 40}):
+            with self.subTest(updates=updates):
+                before = self.path.read_bytes()
+                response = self.post(updates)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertRegex(response.json()["detail"], "no puede superar")
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_equal_bounds_are_accepted(self):
+        self.assertEqual(self.post({"video.detection_min_width": 600}).status_code, 200)
+
+    def test_validate_config_rejects_inverted_bounds(self):
+        from src.utils import ConfigError
+
+        for key, value in (("detection_min_height", 400), ("detection_min_aspect", 7.0),
+                           ("detection_max_width", 1)):  # contra el default de min (24)
+            with self.subTest(key=key):
+                cfg = load_config(PROJECT_DIR / "config.example.yaml")
+                cfg["video"].pop("detection_min_width", None) if key == "detection_max_width" else None
+                cfg["video"][key] = value
+                with self.assertRaisesRegex(ConfigError, "no puede superar"):
+                    validate_config(cfg)
 
 
 class SchemaTest(unittest.TestCase):

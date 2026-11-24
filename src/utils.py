@@ -229,6 +229,15 @@ def validate_config(
     _check_number("video", "framerate", video["framerate"], 1, 240)
     _check_number("video", "inference_interval", video["inference_interval"], 1, None)
     _check_number("video", "detection_threshold", video["detection_threshold"], 0, 1)
+    # Filtros de tamaño de caja (defaults de VideoMonitor). Un mínimo mayor que
+    # el máximo descarta todas las detecciones sin ningún error.
+    for name, lo_default, hi_default in (("width", 24, 600), ("height", 14, 300), ("aspect", 0.5, 6.0)):
+        lo_key, hi_key = f"detection_min_{name}", f"detection_max_{name}"
+        lo, hi = video.get(lo_key, lo_default), video.get(hi_key, hi_default)
+        _check_number("video", lo_key, lo, 0, None)
+        _check_number("video", hi_key, hi, 0, None)
+        if lo > hi:
+            raise ConfigError(f"video.{lo_key} ({lo}) no puede superar video.{hi_key} ({hi})")
 
     source = str(audio.get("source", "device"))
     if source not in ("device", "file"):
