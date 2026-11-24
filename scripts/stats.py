@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Consulta estadísticas del pipeline de monitoreo de ruido.
-Ahora cubre vehicle_passages y noise_events.
+Consulta estadísticas del pipeline de monitoreo de ruido sobre la tabla
+única `events`: pasajes = traffic + both, eventos de ruido = noise + both.
 
 Uso: python scripts/stats.py [--limit N] [--days D]
 """
@@ -49,14 +49,21 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
+PASSAGES = "kind IN ('traffic', 'both')"
+NOISE = "kind IN ('noise', 'both')"
+
+
+def _and(where: str, clause: str) -> str:
+    """Agrega `clause` al WHERE del periodo (que puede venir vacío)."""
+    return f"{where} AND {clause}" if where else f"WHERE {clause}"
+
+
 def print_passages(conn: sqlite3.Connection, where: str, params: list, limit: int):
-    """Vehicle passages stats."""
-    if not _table_exists(conn, "vehicle_passages"):
-        print("\n(tabla vehicle_passages no existe aún)")
-        return
+    """Pasajes del tracker (traffic + both)."""
+    where = _and(where, PASSAGES)
 
     total = conn.execute(
-        f"SELECT COUNT(*) FROM vehicle_passages {where}", params
+        f"SELECT COUNT(*) FROM events {where}", params
     ).fetchone()[0]
     print(f"\n{'=' * 60}")
     print(f"VEHÍCULOS DETECTADOS (tracker): {total} pasajes")
@@ -67,7 +74,7 @@ def print_passages(conn: sqlite3.Connection, where: str, params: list, limit: in
 
     print("\n--- Por clase de vehículo ---")
     for row in conn.execute(
-        f"SELECT vehicle_class, COUNT(*) as n FROM vehicle_passages {where} "
+        f"SELECT vehicle_class, COUNT(*) as n FROM events {where} "
         "GROUP BY vehicle_class ORDER BY n DESC",
         params,
     ).fetchall():
@@ -75,16 +82,17 @@ def print_passages(conn: sqlite3.Connection, where: str, params: list, limit: in
 
     print("\n--- Por carril ---")
     for row in conn.execute(
-        f"SELECT lane, COUNT(*) as n FROM vehicle_passages {where} "
+        f"SELECT lane, COUNT(*) as n FROM events {where} "
         "GROUP BY lane ORDER BY n DESC",
         params,
     ).fetchall():
         print(f"  {row['lane'] or 'N/A'}: {row['n']}")
 
-    print("\n--- dB al momento del pasaje ---")
+    # traffic: nivel al pasar; both: el del ruido que provocó.
+    print("\n--- dB del pasaje ---")
     row = conn.execute(
-        f"SELECT MIN(db_at_time) as lo, MAX(db_at_time) as hi, AVG(db_at_time) as avg "
-        f"FROM vehicle_passages {where} {'AND' if where else 'WHERE'} db_at_time > 0",
+        f"SELECT MIN(db_max) as lo, MAX(db_max) as hi, AVG(db_max) as avg "
+        f"FROM events {_and(where, 'db_max > 0')}",
         params,
     ).fetchone()
     if row["lo"] is not None:
@@ -94,34 +102,30 @@ def print_passages(conn: sqlite3.Connection, where: str, params: list, limit: in
         )
 
     linked = conn.execute(
-        f"SELECT COUNT(*) FROM vehicle_passages {where} "
-        f"{'AND' if where else 'WHERE'} noise_event_id IS NOT NULL",
-        params,
+        f"SELECT COUNT(*) FROM events {_and(where, "kind = 'both'")}", params,
     ).fetchone()[0]
     print(f"\n  Pasajes con evento de ruido asociado: {linked} / {total}")
 
     print(f"\n--- Últimos {limit} pasajes ---")
     for row in conn.execute(
-        f"SELECT id, timestamp, vehicle_class, lane, db_at_time, detection_score, noise_event_id "
-        f"FROM vehicle_passages {where} ORDER BY timestamp DESC LIMIT ?",
+        f"SELECT id, kind, timestamp, vehicle_class, lane, db_max, detection_score "
+        f"FROM events {where} ORDER BY timestamp DESC LIMIT ?",
         params + [limit],
     ).fetchall():
-        noisy = f"→ event #{row['noise_event_id']}" if row["noise_event_id"] else "silencioso"
+        noisy = "con ruido" if row["kind"] == "both" else "silencioso"
         print(
             f"  #{row['id']} {row['timestamp']} | {row['vehicle_class']} | "
-            f"{row['lane'] or '-'} | {_fmt(row['db_at_time'])} dB | "
+            f"{row['lane'] or '-'} | {_fmt(row['db_max'])} dB | "
             f"score {_fmt(row['detection_score'], '{:.2f}')} | {noisy}"
         )
 
 
 def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit: int):
-    """Noise events stats."""
-    if not _table_exists(conn, "noise_events"):
-        print("\n(tabla noise_events no existe aún)")
-        return
+    """Eventos de ruido (noise + both)."""
+    where = _and(where, NOISE)
 
     total = conn.execute(
-        f"SELECT COUNT(*) FROM noise_events {where}", params
+        f"SELECT COUNT(*) FROM events {where}", params
     ).fetchone()[0]
     print(f"\n{'=' * 60}")
     print(f"EVENTOS DE RUIDO: {total} total")
@@ -132,7 +136,7 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
 
     print("\n--- Por categoría de sonido ---")
     for row in conn.execute(
-        f"SELECT sound_category, COUNT(*) as n FROM noise_events {where} "
+        f"SELECT sound_category, COUNT(*) as n FROM events {where} "
         "GROUP BY sound_category ORDER BY n DESC",
         params,
     ).fetchall():
@@ -140,15 +144,15 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
 
     print("\n--- Por trigger ---")
     for row in conn.execute(
-        f"SELECT trigger_type, COUNT(*) as n FROM noise_events {where} "
+        f"SELECT trigger_type, COUNT(*) as n FROM events {where} "
         "GROUP BY trigger_type ORDER BY n DESC",
         params,
     ).fetchall():
         print(f"  {row['trigger_type'] or 'N/A'}: {row['n']}")
 
     vehicular = conn.execute(
-        f"SELECT vehicle_class, COUNT(*) as n FROM noise_events "
-        f"{where} {'AND' if where else 'WHERE'} sound_category = 'vehicle' "
+        f"SELECT vehicle_class, COUNT(*) as n FROM events "
+        f"{_and(where, "sound_category = 'vehicle'")} "
         "GROUP BY vehicle_class ORDER BY n DESC",
         params,
     ).fetchall()
@@ -160,7 +164,7 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
     print("\n--- Nivel sonoro (dB) ---")
     row = conn.execute(
         f"SELECT MIN(db_max) as lo, MAX(db_max) as hi, AVG(db_max) as avg "
-        f"FROM noise_events {where}",
+        f"FROM events {where}",
         params,
     ).fetchone()
     if row["lo"] is not None:
@@ -172,7 +176,7 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
     print(f"\n--- Top 5 más ruidosos ---")
     for row in conn.execute(
         f"SELECT id, timestamp, db_max, sound_category, sound_class, vehicle_class "
-        f"FROM noise_events {where} ORDER BY db_max DESC LIMIT 5",
+        f"FROM events {where} ORDER BY db_max DESC LIMIT 5",
         params,
     ).fetchall():
         print(
@@ -183,12 +187,12 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
     print(f"\n--- Últimos {limit} eventos ---")
     for row in conn.execute(
         f"SELECT id, timestamp, db_max, trigger_type, sound_category, sound_class, "
-        f"vehicle_class, confidence, clip_path, passage_id "
-        f"FROM noise_events {where} ORDER BY timestamp DESC LIMIT ?",
+        f"vehicle_class, confidence, clip_path, kind "
+        f"FROM events {where} ORDER BY timestamp DESC LIMIT ?",
         params + [limit],
     ).fetchall():
         clip = "clip" if row["clip_path"] else "—"
-        linked = f"→ pass #{row['passage_id']}" if row["passage_id"] else ""
+        linked = "+ pasaje" if row["kind"] == "both" else ""
         print(
             f"  #{row['id']} {row['timestamp']} | {_fmt(row['db_max'])} dB | "
             f"{row['trigger_type']} | {row['sound_category'] or '?'}/{row['sound_class'] or '?'} | "
@@ -196,20 +200,18 @@ def print_noise_events(conn: sqlite3.Connection, where: str, params: list, limit
         )
 
 
-def print_legacy(conn: sqlite3.Connection, where: str, params: list, limit: int):
-    """Show old events table if it still exists and has data."""
-    if not _table_exists(conn, "events"):
-        return
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM events {where}", params
-    ).fetchone()[0]
-    if total == 0:
-        return
-
+def print_kinds(conn: sqlite3.Connection, where: str, params: list) -> None:
+    """Conteo por kind de la tabla única."""
+    rows = conn.execute(
+        f"SELECT kind, COUNT(*) AS n FROM events {where} GROUP BY kind", params
+    ).fetchall()
+    counts = {r["kind"]: r["n"] for r in rows}
     print(f"\n{'=' * 60}")
-    print(f"EVENTOS LEGACY (tabla 'events'): {total}")
+    print(
+        f"EVENTOS: {sum(counts.values())} | ruido {counts.get('noise', 0)}"
+        f" · tránsito {counts.get('traffic', 0)} · ambos {counts.get('both', 0)}"
+    )
     print("=" * 60)
-    print("  (Migrados a noise_events si ejecutaste el nuevo schema)")
 
 
 def main():
@@ -238,9 +240,13 @@ def main():
         where = "WHERE timestamp >= ?"
         params = [f"{cutoff}T00:00:00"]
 
+    if not _table_exists(conn, "events"):
+        print(f"{db_path} no tiene la tabla events: correr scripts/migrate_unified.py")
+        sys.exit(1)
+
+    print_kinds(conn, where, params)
     print_passages(conn, where, params, args.limit)
     print_noise_events(conn, where, params, args.limit)
-    print_legacy(conn, where, params, args.limit)
 
     conn.close()
     print()

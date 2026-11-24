@@ -3,7 +3,10 @@
 Purga de datos antiguos del Noise Monitor.
 
 - Clips MP4 con más de `retention.clip_days` días: se borran del disco y la
-  fila de `noise_events` se conserva (estadística) con `clip_path` vacío.
+  fila de `events` (cualquier kind) se conserva (estadística) sin `clip_path`.
+- Los clips fijados no se borran nunca. Se respetan también los fijados de
+  `noise_events_legacy`/`vehicle_passages_legacy`: tras la migración, un evento
+  `both` apunta a un solo clip y el otro archivo sólo lo nombra la tabla legacy.
 - Filas de `audio_levels` con más de `retention.levels_days` días: se borran.
 - Filas con `clip_path` que apunta a un archivo inexistente: se limpian.
 
@@ -44,32 +47,41 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def _clear_missing_clips(
-    conn: sqlite3.Connection, table: str, cutoff: float, dry_run: bool
-) -> int:
-    """Vacía `clip_path` de las filas no fijadas cuyo archivo falta o es viejo.
+# Tablas cuyos clips fijados se protegen. Literales de este módulo, nunca de la CLI.
+PINNED_CLIP_TABLES = ("events", "noise_events_legacy", "vehicle_passages_legacy")
 
-    La tabla se pasa como literal desde este módulo (nunca desde la CLI).
+
+def _clear_missing_clips(
+    conn: sqlite3.Connection, cutoff: float, dry_run: bool, pinned_paths: set[Path]
+) -> dict:
+    """Quita `clip_path` de los eventos no fijados cuyo archivo falta o es viejo.
+
+    Un archivo viejo que fija otra fila (p. ej. la tabla legacy) no se borra
+    del disco, así que la fila que lo nombra lo conserva.
+    Devuelve cuántas filas se limpiaron por kind.
     """
-    if not _table_exists(conn, table):
-        return 0
-    cleared = 0
+    cleared: dict[str, int] = {}
+    if not _table_exists(conn, "events"):
+        return cleared
     rows = conn.execute(
-        f"SELECT id, clip_path FROM {table}"
+        "SELECT id, kind, clip_path FROM events"
         " WHERE clip_path IS NOT NULL AND clip_path != '' AND pinned = 0"
     ).fetchall()
-    for row_id, stored in rows:
+    for row_id, kind, stored in rows:
         path = Path(stored)
         if not path.is_absolute():
             path = PROJECT_DIR / path
         try:
-            keep = path.is_file() and path.stat().st_mtime >= cutoff
+            keep = path.is_file() and (
+                path.stat().st_mtime >= cutoff or path.resolve() in pinned_paths
+            )
         except OSError:
             keep = False
         if not keep:
-            cleared += 1
+            cleared[kind] = cleared.get(kind, 0) + 1
             if not dry_run:
-                conn.execute(f"UPDATE {table} SET clip_path = '' WHERE id = ?", (row_id,))
+                # En `events` "sin clip" es NULL (la migración normaliza '').
+                conn.execute("UPDATE events SET clip_path = NULL WHERE id = ?", (row_id,))
     return cleared
 
 
@@ -106,22 +118,26 @@ def main() -> int:
 
     # Los clips de eventos fijados no se borran nunca: son la evidencia
     # que el dueño marcó explícitamente.
+    # Si no se pueden leer, no se borra ningún clip: un fallo de lectura no
+    # puede convertir evidencia fijada en candidata a purga.
     pinned_paths: set[Path] = set()
+    conn = sqlite3.connect(str(db_path))
     try:
-        conn = sqlite3.connect(str(db_path))
-        for (stored,) in conn.execute(
-            "SELECT clip_path FROM noise_events WHERE pinned = 1 AND clip_path != ''"
-        ):
-            p = Path(stored)
-            pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
-        for (stored,) in conn.execute(
-            "SELECT clip_path FROM vehicle_passages WHERE pinned = 1 AND clip_path IS NOT NULL AND clip_path != ''"
-        ):
-            p = Path(stored)
-            pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
+        if not _table_exists(conn, "events"):
+            print(f"{db_path} no tiene la tabla events: correr scripts/migrate_unified.py",
+                  file=sys.stderr)
+            return 2
+        for table in PINNED_CLIP_TABLES:
+            if not _table_exists(conn, table):
+                continue
+            for (stored,) in conn.execute(
+                f"SELECT clip_path FROM {table}"
+                " WHERE pinned = 1 AND clip_path IS NOT NULL AND clip_path != ''"
+            ):
+                p = Path(stored)
+                pinned_paths.add((p if p.is_absolute() else PROJECT_DIR / p).resolve())
+    finally:
         conn.close()
-    except sqlite3.Error:
-        pass
 
     if clips_dir.is_dir():
         for f in clips_dir.glob("*.mp4"):
@@ -141,13 +157,9 @@ def main() -> int:
 
     conn = sqlite3.connect(str(db_path))
     try:
-        cleared = _clear_missing_clips(conn, "noise_events", clip_cutoff, args.dry_run)
-        # Los clips de pasaje viven en el mismo directorio y se borran por
-        # mtime, pero su fila no se tocaba: el dashboard mostraba "▶ ver" para
-        # un pasaje cuyo archivo ya no existía y el modal daba 404.
-        cleared_passages = _clear_missing_clips(
-            conn, "vehicle_passages", clip_cutoff, args.dry_run
-        )
+        # Todos los kinds: un pasaje cuyo archivo ya no existía mostraba
+        # "▶ ver" y el modal daba 404.
+        cleared = _clear_missing_clips(conn, clip_cutoff, args.dry_run, pinned_paths)
 
         if _table_exists(conn, "audio_levels"):
             old_levels = conn.execute(
@@ -158,7 +170,7 @@ def main() -> int:
         else:
             old_levels = 0
         conn.commit()
-        if not args.dry_run and (deleted_files or cleared or cleared_passages or old_levels):
+        if not args.dry_run and (deleted_files or cleared or old_levels):
             try:
                 conn.execute("VACUUM")
             except sqlite3.OperationalError as exc:
@@ -167,10 +179,10 @@ def main() -> int:
         conn.close()
 
     mode = "DRY-RUN" if args.dry_run else "hecho"
+    by_kind = " ".join(f"{k}={cleared.get(k, 0)}" for k in ("noise", "traffic", "both"))
     print(
         f"[{mode}] clips>={clip_days}d borrados={deleted_files} "
-        f"({freed / 1024 / 1024:.1f} MB), filas sin clip={cleared} eventos "
-        f"+ {cleared_passages} pasajes, "
+        f"({freed / 1024 / 1024:.1f} MB), filas sin clip: {by_kind}, "
         f"niveles>={levels_days}d borrados={old_levels}"
     )
     return 0

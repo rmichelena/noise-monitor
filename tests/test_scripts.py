@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 
 import nightly_report  # noqa: E402
+from support import create_events_table, insert_event  # noqa: E402
 from src.utils import init_database  # noqa: E402
 
 
@@ -52,6 +53,7 @@ class ScriptFixture(unittest.TestCase):
         self.cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
         self.cfg = cfg
         init_database(cfg, PROJECT_DIR)
+        create_events_table(self.db)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -78,49 +80,35 @@ class PurgeTest(ScriptFixture):
         passage_fresh = self.clips / "passage_fresh.mp4"
         passage_fresh.write_bytes(b"y" * 128)
 
-        conn = self.conn()
-        conn.execute(
-            "INSERT INTO noise_events (timestamp, db_max, trigger_type, clip_path, pinned)"
-            " VALUES (?, 70.0, 'peak', ?, 0)",
-            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), str(missing)),
-        )
-        conn.execute(
-            "INSERT INTO noise_events (timestamp, db_max, trigger_type, clip_path, pinned)"
-            " VALUES (?, 80.0, 'peak', ?, 1)",
-            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), str(pinned)),
-        )
-        conn.execute(
-            "INSERT INTO vehicle_passages (timestamp, vehicle_class, clip_path, pinned)"
-            " VALUES (?, 'car', ?, 0)",
-            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), str(passage_missing)),
-        )
-        conn.execute(
-            "INSERT INTO vehicle_passages (timestamp, vehicle_class, clip_path, pinned)"
-            " VALUES (?, 'truck', ?, 0)",
-            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), str(passage_fresh)),
-        )
-        conn.commit()
-        conn.close()
+        now = datetime.now()
+        insert_event(self.db, "noise", now, db_max=70.0, trigger_type="peak",
+                     clip_path=str(missing), pinned=0)
+        insert_event(self.db, "noise", now, db_max=80.0, trigger_type="peak",
+                     clip_path=str(pinned), pinned=1)
+        insert_event(self.db, "traffic", now, vehicle_class="car",
+                     clip_path=str(passage_missing), pinned=0)
+        insert_event(self.db, "traffic", now, vehicle_class="truck",
+                     clip_path=str(passage_fresh), pinned=0)
         return pinned, passage_fresh
 
     def test_purge_clears_event_and_passage_rows(self):
         pinned, passage_fresh = self._seed()
         result = run("purge.py", "--config", str(self.cfg_path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("pasajes", result.stdout)
+        self.assertIn("noise=1 traffic=1 both=0", result.stdout)
 
         conn = self.conn()
         events = {r["pinned"]: r["clip_path"] for r in conn.execute(
-            "SELECT pinned, clip_path FROM noise_events"
+            "SELECT pinned, clip_path FROM events WHERE kind = 'noise'"
         )}
         passages = {r["vehicle_class"]: r["clip_path"] for r in conn.execute(
-            "SELECT vehicle_class, clip_path FROM vehicle_passages"
+            "SELECT vehicle_class, clip_path FROM events WHERE kind = 'traffic'"
         )}
         conn.close()
 
-        self.assertEqual(events[0], "")          # faltaba el archivo
+        self.assertIsNone(events[0])              # faltaba el archivo
         self.assertEqual(events[1], str(pinned))  # fijado: se conserva
-        self.assertEqual(passages["car"], "")     # faltaba el archivo
+        self.assertIsNone(passages["car"])        # faltaba el archivo
         self.assertEqual(passages["truck"], str(passage_fresh))
 
     def test_dry_run_changes_nothing(self):
@@ -131,10 +119,11 @@ class PurgeTest(ScriptFixture):
 
         conn = self.conn()
         remaining = conn.execute(
-            "SELECT COUNT(*) FROM vehicle_passages WHERE clip_path != ''"
+            "SELECT COUNT(*) FROM events WHERE clip_path IS NOT NULL"
         ).fetchone()[0]
         conn.close()
-        self.assertEqual(remaining, 2)
+        self.assertEqual(remaining, 4)
+        self.assertIn("noise=1 traffic=1 both=0", result.stdout)
         self.assertTrue(pinned.exists())
 
     def test_zero_days_is_refused(self):
@@ -144,10 +133,10 @@ class PurgeTest(ScriptFixture):
         self.assertIn(">= 1", result.stderr)
         conn = self.conn()
         kept = conn.execute(
-            "SELECT COUNT(*) FROM noise_events WHERE clip_path != ''"
+            "SELECT COUNT(*) FROM events WHERE clip_path IS NOT NULL"
         ).fetchone()[0]
         conn.close()
-        self.assertEqual(kept, 2)
+        self.assertEqual(kept, 4)
 
     def test_negative_days_is_refused(self):
         result = run("purge.py", "--config", str(self.cfg_path), "--levels-days", "-5")
@@ -157,19 +146,11 @@ class PurgeTest(ScriptFixture):
 
 class StatsScriptTest(ScriptFixture):
     def _seed(self):
-        conn = self.conn()
-        conn.execute(
-            "INSERT INTO noise_events (timestamp, db_max, trigger_type, clip_path)"
-            " VALUES (?, ?, 'peak', '')",
-            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), float("-inf")),
-        )
-        conn.execute(
-            "INSERT INTO vehicle_passages (timestamp, vehicle_class, db_at_time,"
-            " detection_score, clip_path) VALUES (?, 'car', NULL, NULL, '')",
-            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),),
-        )
-        conn.commit()
-        conn.close()
+        now = datetime.now()
+        insert_event(self.db, "noise", now, db_max=float("-inf"), trigger_type="peak")
+        insert_event(self.db, "traffic", now, vehicle_class="car")
+        insert_event(self.db, "both", now, db_max=72.0, trigger_type="peak",
+                     vehicle_class="truck", sound_category="vehicle")
 
     def test_null_columns_do_not_crash(self):
         self._seed()
@@ -177,6 +158,23 @@ class StatsScriptTest(ScriptFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("VEHÍCULOS DETECTADOS", result.stdout)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_counts_by_kind(self):
+        self._seed()
+        result = run("stats.py", "--db", str(self.db), "--limit", "5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EVENTOS: 3 | ruido 1 · tránsito 1 · ambos 1", result.stdout)
+        # Un `both` es pasaje y es ruido a la vez.
+        self.assertIn("VEHÍCULOS DETECTADOS (tracker): 2 pasajes", result.stdout)
+        self.assertIn("EVENTOS DE RUIDO: 2 total", result.stdout)
+        self.assertIn("Pasajes con evento de ruido asociado: 1 / 2", result.stdout)
+
+    def test_missing_events_table_fails(self):
+        with self.conn() as conn:
+            conn.execute("DROP TABLE events")
+        result = run("stats.py", "--db", str(self.db))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("migrate_unified", result.stdout)
 
     def test_limit_zero_is_refused(self):
         self._seed()
@@ -209,6 +207,19 @@ class NightlyReportTest(ScriptFixture):
         )
         self.assertIn("P95 de minuto 68.0", text)
         self.assertIn("mediana", text)
+
+    def test_report_counts_both_as_noise_and_passage(self):
+        now = datetime.now().replace(second=0, microsecond=0)
+        when = now - timedelta(minutes=30)
+        insert_event(self.db, "noise", when, db_max=65.0, trigger_type="peak")
+        insert_event(self.db, "traffic", when, db_max=50.0, vehicle_class="car")
+        insert_event(self.db, "both", when, db_max=78.0, trigger_type="peak",
+                     vehicle_class="truck", direction="ltr")
+        text = nightly_report.build_report(self.db, now - timedelta(hours=2), now)
+        self.assertIn("ruido 1 · tránsito 1 · ambos 1", text)
+        self.assertIn("**Ruido:** 2 eventos", text)
+        self.assertIn("**Vehículos:** 2 pasajes", text)
+        self.assertIn("· both ·", text)
 
     def test_hours_must_be_positive(self):
         result = run("nightly_report.py", "--db", str(self.db), "--hours", "0")

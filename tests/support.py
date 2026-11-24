@@ -71,3 +71,20 @@ def create_events_table(db_path: str | Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def insert_event(db_path: str | Path, kind: str, when, **cols) -> int:
+    """Inserta una fila en `events` con ventana [when, when + 2 s]; devuelve el id."""
+    import sqlite3
+
+    cols = {"kind": kind, "timestamp": when.strftime("%Y-%m-%dT%H:%M:%S"),
+            "start_ts": when.timestamp(), "end_ts": when.timestamp() + 2, **cols}
+    names = ", ".join(cols)
+    marks = ", ".join("?" for _ in cols)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        cur = conn.execute(f"INSERT INTO events ({names}) VALUES ({marks})", tuple(cols.values()))
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()

@@ -61,16 +61,20 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
     conn.row_factory = sqlite3.Row
     lo, hi = start.isoformat(), end.isoformat()
 
-    events = conn.execute(
-        "SELECT * FROM noise_events WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp",
+    # Una sola tabla: "ruido" = noise + both, "pasajes" = traffic + both.
+    rows = conn.execute(
+        "SELECT * FROM events WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp, id",
         (lo, hi),
     ).fetchall()
-    passages = conn.execute(
-        "SELECT * FROM vehicle_passages WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp",
-        (lo, hi),
-    ).fetchall()
+    events = [r for r in rows if r["kind"] in ("noise", "both")]
+    passages = [r for r in rows if r["kind"] in ("traffic", "both")]
+    by_kind = Counter(r["kind"] for r in rows)
 
     lines = [f"### Reporte de turno — {start:%d/%m %H:%M} a {end:%d/%m %H:%M} (Lima)", ""]
+    lines.append(
+        f"**Por tipo:** ruido {by_kind['noise']} · tránsito {by_kind['traffic']}"
+        f" · ambos {by_kind['both']}"
+    )
 
     if not events:
         lines.append(
@@ -98,16 +102,18 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
         lines.append("")
         lines.append("**Los más fuertes:**")
         for e in top:
-            kind = e["vehicle_class"] or e["sound_class"] or "?"
+            source = e["vehicle_class"] or e["sound_class"] or "?"
             statue = e["trigger_type"] or ""
             clip = Path(e["clip_path"]).name if e["clip_path"] else "sin clip"
             lines.append(
-                f"- {e['timestamp'][11:16]} · {_fmt(e['db_max'])} dB(A) · {kind} ({statue}) · `{clip}`"
+                f"- {e['timestamp'][11:16]} · {_fmt(e['db_max'])} dB(A) · {source} ({statue})"
+                f" · {e['kind']} · `{clip}`"
             )
 
     if passages:
         by_class = Counter(p["vehicle_class"] for p in passages)
-        dbs = [p["db_at_time"] for p in passages if p["db_at_time"] is not None]
+        # traffic: nivel al pasar; both: el del ruido que el pasaje provocó.
+        dbs = [p["db_max"] for p in passages if p["db_max"] is not None and math.isfinite(p["db_max"])]
         extra = f", {min(dbs):.0f}–{max(dbs):.0f} dB(A)" if dbs else ""
         lines.append("")
         lines.append(
@@ -121,10 +127,7 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
                 f"**Velocidad:** media {sum(speeds)/len(speeds):.0f} km/h · "
                 f"máx {max(speeds):.0f} km/h ({len(speeds)} medidos)"
             )
-        try:
-            dirs = Counter(p["direction"] for p in passages if p["direction"])
-        except (IndexError, KeyError):
-            dirs = Counter()  # base anterior a la columna direction
+        dirs = Counter(p["direction"] for p in passages if p["direction"])
         if dirs:
             label = {"ltr": "izq→der", "rtl": "der→izq"}
             lines.append(

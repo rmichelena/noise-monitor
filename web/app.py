@@ -1,14 +1,22 @@
 """
 Dashboard web del Noise Monitor (Fase 2).
 
-Lee la base SQLite en modo solo-lectura y expone el nivel dB actual desde el
-AudioMonitor en memoria. No escribe nada en la base.
+Lee la tabla única `events` (kind = noise | traffic | both) en modo
+solo-lectura y expone el nivel dB actual desde el AudioMonitor en memoria.
+Sólo escribe la marca de fijado.
+
+- "Ruido" son las filas `noise` y `both` (hubo disparo acústico).
+- "Pasaje" son las filas `traffic` y `both` (el tracker vio un vehículo).
 
 Endpoints:
   GET /                    página principal
   GET /api/live            dB actual + contadores del día
-  GET /api/events          últimos eventos (filtros: limit, category, min_db)
-  GET /api/clips/{id}      clip MP4 de un evento
+  GET /api/events          últimos eventos de todos los kinds (filtros)
+  GET /api/passages        alias: eventos con pasaje (traffic + both)
+  GET /api/clips/{id}      clip MP4 de un evento (cualquier kind)
+  GET /api/passage-clips/{id}    alias de /api/clips para pasajes
+  POST /api/events/{id}/pin      fija/desfija un evento
+  POST /api/passages/{id}/pin    alias para pasajes
   GET /api/export/events.csv     eventos del periodo en CSV (evidencia)
   GET /api/export/passages.csv   pasajes del periodo en CSV
   GET /api/stats           agregados de hoy / 7 días
@@ -54,17 +62,22 @@ def db_color(value: float) -> str:
     return DB_BANDS[-1][1]
 logger = logging.getLogger(__name__)
 
+KINDS = ("noise", "traffic", "both")
+NOISE_KINDS = "('noise', 'both')"
+PASSAGE_KINDS = "('traffic', 'both')"
+
 EVENTS_CSV_COLUMNS = [
-    "id", "timestamp", "db_max", "db_avg", "trigger_type", "sound_class",
-    "sound_category", "sound_confidence", "vehicle_class", "lane", "direction",
-    "confidence", "passage_id", "duration_ms", "audio_muted", "pinned",
+    "id", "kind", "timestamp", "timestamp_end", "db_max", "db_avg", "trigger_type",
+    "sound_class", "sound_category", "sound_confidence", "vehicle_class", "lane",
+    "direction", "speed_kmh", "confidence", "duration_ms", "audio_muted", "pinned",
     "clip_path",
 ]
 PASSAGES_CSV_COLUMNS = [
-    "id", "timestamp", "timestamp_exit", "vehicle_class", "lane", "direction",
-    "speed_kmh", "detection_score", "db_at_time", "noise_event_id", "pinned",
-    "clip_path",
+    "id", "kind", "timestamp", "timestamp_end", "vehicle_class", "lane", "direction",
+    "speed_kmh", "detection_score", "db_max", "pinned", "clip_path",
 ]
+# Fin de la ventana del evento en el mismo formato ISO local que `timestamp`.
+TIMESTAMP_END = "strftime('%Y-%m-%dT%H:%M:%S', end_ts, 'unixepoch', 'localtime') AS timestamp_end"
 
 
 
@@ -196,14 +209,19 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     def _counters() -> dict:
         day = _today_prefix()
-        ev = _query("SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ?", (day,))
-        ps = _query("SELECT COUNT(*) n FROM vehicle_passages WHERE timestamp >= ?", (day,))
+        ev = _query(
+            f"SELECT COUNT(*) n FROM events WHERE kind IN {NOISE_KINDS} AND timestamp >= ?", (day,)
+        )
+        ps = _query(
+            f"SELECT COUNT(*) n FROM events WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ?", (day,)
+        )
         maxdb = _query(
-            "SELECT MAX(db_max) m FROM noise_events WHERE timestamp >= ?", (day,)
+            f"SELECT MAX(db_max) m FROM events WHERE kind IN {NOISE_KINDS} AND timestamp >= ?", (day,)
         )
         hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
         missing = _query(
-            "SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ? AND COALESCE(clip_path, '') = ''",
+            f"SELECT COUNT(*) n FROM events WHERE kind IN {NOISE_KINDS} AND timestamp >= ?"
+            " AND COALESCE(clip_path, '') = ''",
             (hour_ago,),
         )
         peak = maxdb[0]["m"] if maxdb else None
@@ -246,19 +264,20 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
                       "person", "unknown"} | set(config.get("noise_priority") or {})
     NOISE_CATEGORIES = _BASE_CATEGORIES | {
         r["c"] for r in _query(
-            "SELECT DISTINCT sound_category c FROM noise_events"
+            "SELECT DISTINCT sound_category c FROM events"
             " WHERE sound_category IS NOT NULL AND sound_category != ''"
         )
     }
     VEHICLE_FILTERS = _BASE_VEHICLES | {
         r["c"] for r in _query(
-            "SELECT DISTINCT vehicle_class c FROM noise_events"
-            " WHERE vehicle_class IS NOT NULL AND vehicle_class != ''"
-            " UNION SELECT DISTINCT vehicle_class FROM vehicle_passages"
+            "SELECT DISTINCT vehicle_class c FROM events"
             " WHERE vehicle_class IS NOT NULL AND vehicle_class != ''"
         )
     }
     DIRECTIONS = {"ltr", "rtl"}
+    # Conjuntos además de los kinds: `sound` = noise + both (lo que cuentan los
+    # contadores de eventos) y `passages` = traffic + both (los de tráfico).
+    KIND_FILTERS = set(KINDS) | {"sound", "passages"}
 
     def _validate_filter(name: str, value: str | None, allowed: set[str]) -> None:
         if value is not None and value not in allowed:
@@ -318,7 +337,7 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         start = end - timedelta(minutes=minutes - 1)
         rows = _query(
             "SELECT substr(timestamp, 1, 16) m, vehicle_class c, COUNT(*) n"
-            " FROM vehicle_passages WHERE timestamp >= ? GROUP BY m, c",
+            f" FROM events WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ? GROUP BY m, c",
             (start.strftime("%Y-%m-%dT%H:%M"),),
         )
         by_minute: dict[str, dict[str, int]] = {}
@@ -372,41 +391,70 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             bars.append({"x": round(i * width, 2), "w": round(width * 0.8, 2), "h": round(h, 1)})
         return bars
 
-    def _events(
-        limit: int,
+    def _filter_sql(
+        kind: str | None,
         category: str | None,
         min_db: float | None,
-        vehicle: str | None = None,
-        direction: str | None = None,
-        pinned_only: bool = False,
-    ) -> list[dict]:
+        vehicle: str | None,
+        direction: str | None,
+        min_speed: float | None,
+        pinned_only: bool,
+    ) -> tuple[str, list]:
+        """WHERE común a la lista, la API y los CSV; valida antes de consultar."""
+        _validate_filter("kind", kind, KIND_FILTERS)
         _validate_filter("category", category, NOISE_CATEGORIES)
         _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
         _validate_filter("direction", direction, DIRECTIONS)
-        sql = (
-            "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
-            " e.sound_class, e.sound_category, e.sound_confidence, e.sound_labels_json, e.vehicle_class,"
-            " e.clip_path, e.audio_muted, e.pinned, p.direction AS direction"
-            " FROM noise_events e"
-            " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
-            " WHERE 1=1"
-        )
+        sql = " WHERE 1=1"
         params: list = []
+        if kind == "passages":
+            sql += f" AND kind IN {PASSAGE_KINDS}"
+        elif kind == "sound":
+            sql += f" AND kind IN {NOISE_KINDS}"
+        elif kind:
+            sql += " AND kind = ?"
+            params.append(kind)
         if category:
-            sql += " AND e.sound_category = ?"
+            sql += " AND sound_category = ?"
             params.append(category)
         if min_db is not None:
-            sql += " AND e.db_max >= ?"
+            sql += " AND db_max >= ?"
             params.append(min_db)
         if vehicle:
-            sql += " AND e.vehicle_class = ?"
+            sql += " AND vehicle_class = ?"
             params.append(vehicle)
         if direction:
-            sql += " AND p.direction = ?"
+            sql += " AND direction = ?"
             params.append(direction)
+        if min_speed is not None:
+            sql += " AND speed_kmh >= ?"
+            params.append(min_speed)
         if pinned_only:
-            sql += " AND e.pinned = 1"
-        sql += " ORDER BY e.id DESC LIMIT ?"
+            sql += " AND pinned = 1"
+        return sql, params
+
+    def _events(
+        limit: int,
+        category: str | None = None,
+        min_db: float | None = None,
+        vehicle: str | None = None,
+        direction: str | None = None,
+        pinned_only: bool = False,
+        kind: str | None = None,
+        min_speed: float | None = None,
+    ) -> list[dict]:
+        where, params = _filter_sql(
+            kind, category, min_db, vehicle, direction, min_speed, pinned_only
+        )
+        sql = (
+            "SELECT id, kind, timestamp, db_max, db_avg, trigger_type,"
+            " sound_class, sound_category, sound_confidence, sound_labels_json,"
+            " vehicle_class, lane, direction, speed_kmh, detection_score,"
+            " clip_path, audio_muted, pinned FROM events"
+            + where
+            # Los ids de traffic migrados no siguen el orden temporal.
+            + " ORDER BY timestamp DESC, id DESC LIMIT ?"
+        )
         params.append(limit)
         rows = _query(sql, tuple(params))
         for r in rows:
@@ -419,45 +467,12 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             r["sound_labels"] = labels if isinstance(labels, list) else []
         return rows
 
-    def _passages(
-        limit: int,
-        vehicle: str | None = None,
-        direction: str | None = None,
-        min_db: float | None = None,
-        min_speed: float | None = None,
-        pinned_only: bool = False,
-    ) -> list[dict]:
-        _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
-        _validate_filter("direction", direction, DIRECTIONS)
-        sql = (
-            "SELECT id, timestamp, timestamp_exit, vehicle_class, lane, direction,"
-            " speed_kmh, detection_score, db_at_time, clip_path, pinned"
-            " FROM vehicle_passages WHERE 1=1"
-        )
-        params: list = []
-        if vehicle:
-            sql += " AND vehicle_class = ?"
-            params.append(vehicle)
-        if direction:
-            sql += " AND direction = ?"
-            params.append(direction)
-        if min_db is not None:
-            sql += " AND db_at_time >= ?"
-            params.append(min_db)
-        if min_speed is not None:
-            sql += " AND speed_kmh >= ?"
-            params.append(min_speed)
-        if pinned_only:
-            sql += " AND pinned = 1"
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-        return _query(sql, tuple(params))
-
     def _passages_today() -> dict:
         day = _today_prefix()
         rows = _query(
-            "SELECT vehicle_class, direction, COUNT(*) n FROM vehicle_passages"
-            " WHERE timestamp >= ? GROUP BY vehicle_class, direction",
+            "SELECT vehicle_class, direction, COUNT(*) n FROM events"
+            f" WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ?"
+            " GROUP BY vehicle_class, direction",
             (day,),
         )
         by_class: dict[str, int] = {}
@@ -467,22 +482,28 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             if r["direction"]:
                 by_dir[r["direction"]] = by_dir.get(r["direction"], 0) + r["n"]
         ev_rows = _query(
-            "SELECT e.vehicle_class c, COUNT(*) n FROM noise_events e"
-            " WHERE e.timestamp >= ? AND e.vehicle_class IS NOT NULL GROUP BY c",
+            f"SELECT vehicle_class c, COUNT(*) n FROM events WHERE kind IN {NOISE_KINDS}"
+            " AND timestamp >= ? AND vehicle_class IS NOT NULL GROUP BY c",
             (day,),
         )
         events_by_class = {r["c"]: r["n"] for r in ev_rows}
         ev_dir = _query(
-            "SELECT p.direction d, COUNT(*) n FROM noise_events e"
-            " JOIN vehicle_passages p ON p.id = e.passage_id"
-            " WHERE e.timestamp >= ? AND p.direction IS NOT NULL GROUP BY d",
+            f"SELECT direction d, COUNT(*) n FROM events WHERE kind IN {NOISE_KINDS}"
+            " AND timestamp >= ? AND direction IS NOT NULL GROUP BY d",
             (day,),
         )
         events_by_dir = {r["d"]: r["n"] for r in ev_dir}
+        by_kind = {
+            r["kind"]: r["n"] for r in _query(
+                "SELECT kind, COUNT(*) n FROM events WHERE timestamp >= ? GROUP BY kind",
+                (day,),
+            )
+        }
 
         sp = _query(
             "SELECT AVG(speed_kmh) v, COUNT(speed_kmh) n, MAX(speed_kmh) mx"
-            " FROM vehicle_passages WHERE timestamp >= ? AND speed_kmh IS NOT NULL",
+            f" FROM events WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ?"
+            " AND speed_kmh IS NOT NULL",
             (day,),
         )
         speed = None
@@ -498,9 +519,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "speed": speed,
             "events_by_class": events_by_class,
             "events_by_dir": events_by_dir,
-            "events_total": (
-                _query("SELECT COUNT(*) n FROM noise_events WHERE timestamp >= ?", (day,))[0]["n"]
-            ),
+            "by_kind": {k: by_kind.get(k, 0) for k in KINDS},
+            "events_total": by_kind.get("noise", 0) + by_kind.get("both", 0),
         }
 
     # ------------------------------------------------------------------
@@ -511,9 +531,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "current_db": _current_db(),
             "counters": _counters(),
             "coral_ok": _coral_ok(),
-            "events": _events(PAGE_SIZE, None, None),
+            "events": _events(PAGE_SIZE),
             "passages": _passages_today(),
-            "passages_list": _passages(PAGE_SIZE),
             "audio_chart": _audio_bars(),
             "vehicle_chart": _vehicle_bars(),
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -531,16 +550,20 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     @app.get("/partials/events", response_class=HTMLResponse)
     def partial_events(
         request: Request,
+        kind: str | None = None,
+        category: str | None = None,
         vehicle: str | None = None,
         direction: str | None = None,
         min_db: float | None = None,
+        min_speed: float | None = None,
         pinned: int = 0,
     ):
         ctx = _context()
         ctx["events"] = _events(
-            PAGE_SIZE, None, min_db, vehicle, direction, pinned_only=bool(pinned)
+            PAGE_SIZE, category, min_db, vehicle, direction,
+            pinned_only=bool(pinned), kind=kind, min_speed=min_speed,
         )
-        ctx["filter_label"] = vehicle or direction
+        ctx["filter_label"] = vehicle or direction or category
         return templates.TemplateResponse(request, "_events.html", ctx)
 
     @app.get("/partials/spark", response_class=HTMLResponse)
@@ -558,22 +581,6 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     @app.get("/partials/vehicle-chart", response_class=HTMLResponse)
     def partial_vehicle_chart(request: Request):
         return templates.TemplateResponse(request, "_vehicle_chart.html", _context())
-
-    @app.get("/partials/passages", response_class=HTMLResponse)
-    def partial_passages(
-        request: Request,
-        vehicle: str | None = None,
-        direction: str | None = None,
-        min_db: float | None = None,
-        min_speed: float | None = None,
-        pinned: int = 0,
-    ):
-        ctx = _context()
-        ctx["passages_list"] = _passages(
-            PAGE_SIZE, vehicle, direction, min_db, min_speed, bool(pinned)
-        )
-        ctx["filter_label"] = vehicle or direction
-        return templates.TemplateResponse(request, "_passages.html", ctx)
 
     # ------------------------------------------------------------------
     # API
@@ -594,49 +601,56 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
     @app.get("/api/events")
     def api_events(
         limit: int = Query(20, ge=1, le=200),
+        kind: str | None = None,
         category: str | None = None,
         min_db: float | None = None,
         vehicle: str | None = None,
         direction: str | None = None,
+        min_speed: float | None = None,
+        pinned: int = 0,
     ):
-        return {"events": _events(limit, category, min_db, vehicle, direction)}
+        return {"events": _events(
+            limit, category, min_db, vehicle, direction,
+            pinned_only=bool(pinned), kind=kind, min_speed=min_speed,
+        )}
+
+    @app.get("/api/passages")
+    def api_passages(
+        limit: int = Query(20, ge=1, le=200),
+        min_db: float | None = None,
+        vehicle: str | None = None,
+        direction: str | None = None,
+        min_speed: float | None = None,
+        pinned: int = 0,
+    ):
+        """Alias de /api/events con pasaje (traffic + both)."""
+        return {"passages": _events(
+            limit, None, min_db, vehicle, direction,
+            pinned_only=bool(pinned), kind="passages", min_speed=min_speed,
+        )}
 
     @app.get("/api/export/events.csv")
     def export_events(
         days: int = Query(7, ge=1, le=366),
+        kind: str | None = None,
         min_db: float | None = None,
         vehicle: str | None = None,
         category: str | None = None,
         direction: str | None = None,
+        min_speed: float | None = None,
     ):
         """Eventos de los últimos `days` días en CSV (evidencia para un reclamo)."""
-        since = _since(days)
-        sql = (
-            "SELECT e.id, e.timestamp, e.db_max, e.db_avg, e.trigger_type,"
-            " e.sound_class, e.sound_category, e.sound_confidence,"
-            " e.vehicle_class, e.lane, p.direction, e.confidence, e.passage_id,"
-            " e.duration_ms, e.audio_muted, e.pinned, e.clip_path"
-            " FROM noise_events e"
-            " LEFT JOIN vehicle_passages p ON p.id = e.passage_id"
-            " WHERE e.timestamp >= ?"
+        where, params = _filter_sql(
+            kind, category, min_db, vehicle, direction, min_speed, False
         )
-        params: list = [since]
-        if min_db is not None:
-            sql += " AND e.db_max >= ?"
-            params.append(min_db)
-        if vehicle:
-            _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
-            sql += " AND e.vehicle_class = ?"
-            params.append(vehicle)
-        if category:
-            _validate_filter("category", category, NOISE_CATEGORIES)
-            sql += " AND e.sound_category = ?"
-            params.append(category)
-        if direction:
-            _validate_filter("direction", direction, DIRECTIONS)
-            sql += " AND p.direction = ?"
-            params.append(direction)
-        sql += " ORDER BY e.timestamp"
+        sql = (
+            "SELECT id, kind, timestamp, " + TIMESTAMP_END + ", db_max, db_avg,"
+            " trigger_type, sound_class, sound_category, sound_confidence,"
+            " vehicle_class, lane, direction, speed_kmh, confidence, duration_ms,"
+            " audio_muted, pinned, clip_path FROM events"
+            + where + " AND timestamp >= ? ORDER BY timestamp, id"
+        )
+        params.append(_since(days))
         return _csv_response(
             sql, tuple(params), EVENTS_CSV_COLUMNS, f"eventos_{_stamp()}.csv"
         )
@@ -649,41 +663,29 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         vehicle: str | None = None,
         direction: str | None = None,
     ):
-        """Pasajes de vehículos de los últimos `days` días en CSV."""
-        since = _since(days)
-        sql = (
-            "SELECT id, timestamp, timestamp_exit, vehicle_class, lane, direction,"
-            " speed_kmh, detection_score, db_at_time, noise_event_id, pinned, clip_path"
-            " FROM vehicle_passages WHERE timestamp >= ?"
+        """Pasajes (traffic + both) de los últimos `days` días en CSV."""
+        where, params = _filter_sql(
+            "passages", None, min_db, vehicle, direction, min_speed, False
         )
-        params: list = [since]
-        if min_db is not None:
-            sql += " AND db_at_time >= ?"
-            params.append(min_db)
-        if min_speed is not None:
-            sql += " AND speed_kmh >= ?"
-            params.append(min_speed)
-        if vehicle:
-            _validate_filter("vehicle", vehicle, VEHICLE_FILTERS)
-            sql += " AND vehicle_class = ?"
-            params.append(vehicle)
-        if direction:
-            _validate_filter("direction", direction, DIRECTIONS)
-            sql += " AND direction = ?"
-            params.append(direction)
-        sql += " ORDER BY timestamp"
+        sql = (
+            "SELECT id, kind, timestamp, " + TIMESTAMP_END + ", vehicle_class, lane,"
+            " direction, speed_kmh, detection_score, db_max, pinned, clip_path"
+            " FROM events" + where + " AND timestamp >= ? ORDER BY timestamp, id"
+        )
+        params.append(_since(days))
         return _csv_response(
             sql, tuple(params), PASSAGES_CSV_COLUMNS, f"pasajes_{_stamp()}.csv"
         )
 
-    @app.get("/api/clips/{event_id}")
-    def api_clip(event_id: int):
-        rows = _query("SELECT clip_path FROM noise_events WHERE id = ?", (event_id,))
+    def _serve_clip(event_id: int, kinds: str | None = None) -> FileResponse:
+        sql = "SELECT clip_path FROM events WHERE id = ?"
+        if kinds:
+            sql += f" AND kind IN {kinds}"
+        rows = _query(sql, (event_id,))
         if not rows or not rows[0]["clip_path"]:
             raise HTTPException(status_code=404, detail="Clip no encontrado")
         stored = Path(rows[0]["clip_path"])
-        path = stored if stored.is_absolute() else base_dir / stored
-        path = path.resolve()
+        path = (stored if stored.is_absolute() else base_dir / stored).resolve()
         # Solo se sirven archivos dentro del directorio de clips configurado.
         if clips_dir.resolve() not in path.parents or not path.is_file():
             raise HTTPException(status_code=404, detail="Archivo no encontrado")
@@ -693,6 +695,15 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             media_type="video/mp4",
             headers={"Content-Disposition": f'inline; filename="{path.name}"'},
         )
+
+    @app.get("/api/clips/{event_id}")
+    def api_clip(event_id: int):
+        return _serve_clip(event_id)
+
+    @app.get("/api/passage-clips/{event_id}")
+    def api_passage_clip(event_id: int):
+        """Alias de /api/clips restringido a eventos con pasaje."""
+        return _serve_clip(event_id, PASSAGE_KINDS)
 
     @app.get("/api/detections")
     def api_detections():
@@ -704,72 +715,55 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             dets.append({"class": d["class"], "score": round(d["score"], 2)})
         return {"detections": dets, "coral_ok": _coral_ok()}
 
-    @app.post("/api/events/{event_id}/pin")
-    def pin_event(event_id: int, pinned: int = 1):
-        rows = _query("SELECT id FROM noise_events WHERE id = ?", (event_id,))
-        if not rows:
-            raise HTTPException(status_code=404, detail="Evento no encontrado")
+    def _pin(event_id: int, pinned: int, kinds: str | None, missing: str) -> dict:
+        sql = "SELECT id FROM events WHERE id = ?"
+        if kinds:
+            sql += f" AND kind IN {kinds}"
+        if not _query(sql, (event_id,)):
+            raise HTTPException(status_code=404, detail=missing)
         if pinned:
             _write(
-                "UPDATE noise_events SET pinned = 1, pinned_at = ? WHERE id = ?",
+                "UPDATE events SET pinned = 1, pinned_at = ? WHERE id = ?",
                 (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), event_id),
             )
         else:
             _write(
-                "UPDATE noise_events SET pinned = 0, pinned_at = NULL WHERE id = ?",
+                "UPDATE events SET pinned = 0, pinned_at = NULL WHERE id = ?",
                 (event_id,),
             )
         return {"ok": True, "id": event_id, "pinned": bool(pinned)}
 
-    @app.post("/api/passages/{passage_id}/pin")
-    def pin_passage(passage_id: int, pinned: int = 1):
-        rows = _query("SELECT id FROM vehicle_passages WHERE id = ?", (passage_id,))
-        if not rows:
-            raise HTTPException(status_code=404, detail="Pasaje no encontrado")
-        if pinned:
-            _write(
-                "UPDATE vehicle_passages SET pinned = 1, pinned_at = ? WHERE id = ?",
-                (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), passage_id),
-            )
-        else:
-            _write(
-                "UPDATE vehicle_passages SET pinned = 0, pinned_at = NULL WHERE id = ?",
-                (passage_id,),
-            )
-        return {"ok": True, "id": passage_id, "pinned": bool(pinned)}
+    @app.post("/api/events/{event_id}/pin")
+    def pin_event(event_id: int, pinned: int = 1):
+        return _pin(event_id, pinned, None, "Evento no encontrado")
 
-    @app.get("/api/passage-clips/{passage_id}")
-    def api_passage_clip(passage_id: int):
-        rows = _query(
-            "SELECT clip_path FROM vehicle_passages WHERE id = ?", (passage_id,)
-        )
-        if not rows or not rows[0]["clip_path"]:
-            raise HTTPException(status_code=404, detail="Clip no encontrado")
-        stored = Path(rows[0]["clip_path"])
-        path = (stored if stored.is_absolute() else base_dir / stored).resolve()
-        if clips_dir.resolve() not in path.parents or not path.is_file():
-            raise HTTPException(status_code=404, detail="Archivo no encontrado")
-        return FileResponse(
-            path,
-            media_type="video/mp4",
-            headers={"Content-Disposition": f'inline; filename="{path.name}"'},
-        )
+    @app.post("/api/passages/{event_id}/pin")
+    def pin_passage(event_id: int, pinned: int = 1):
+        """Alias de /api/events/{id}/pin restringido a eventos con pasaje."""
+        return _pin(event_id, pinned, PASSAGE_KINDS, "Pasaje no encontrado")
 
     @app.get("/api/stats")
     def api_stats():
         day = _today_prefix()
         week = _query(
             "SELECT substr(timestamp, 1, 10) d, COUNT(*) n, MAX(db_max) m"
-            " FROM noise_events WHERE timestamp >= date(?, '-6 days') GROUP BY d ORDER BY d",
+            f" FROM events WHERE kind IN {NOISE_KINDS} AND timestamp >= date(?, '-6 days')"
+            " GROUP BY d ORDER BY d",
             (day,),
         )
         cats = _query(
-            "SELECT sound_category c, COUNT(*) n FROM noise_events"
-            " WHERE timestamp >= date(?, '-6 days') GROUP BY c ORDER BY n DESC",
+            "SELECT sound_category c, COUNT(*) n FROM events"
+            f" WHERE kind IN {NOISE_KINDS} AND timestamp >= date(?, '-6 days')"
+            " GROUP BY c ORDER BY n DESC",
+            (day,),
+        )
+        kinds = _query(
+            "SELECT kind, COUNT(*) n FROM events WHERE timestamp >= date(?, '-6 days')"
+            " GROUP BY kind ORDER BY kind",
             (day,),
         )
         return {"counters": _counters(), "passages": _passages_today(),
-                "days": week, "categories": cats}
+                "days": week, "categories": cats, "kinds": kinds}
 
     @app.get("/stream")
     def stream():
