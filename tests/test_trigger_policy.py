@@ -468,6 +468,41 @@ class PassageGatingTest(unittest.TestCase):
         self.assertAlmostEqual(row["start_ts"], self.base + 10.0 - PRE)
         self.assertAlmostEqual(row["end_ts"], self.base + 10.0 + POST)
         self.assertTrue(Path(row["clip_path"]).exists())
+        self.assertEqual(em.status()["union_clip_fallbacks"], 1)
+
+    def record_union(self, em):
+        results = []
+        original = em._union_clip
+
+        def recording(*args, **kwargs):
+            results.append(original(*args, **kwargs))
+            return results[-1]
+
+        em._union_clip = recording
+        return results
+
+    def test_memory_passage_both_clips_fail_keeps_both_without_clip(self):
+        em = self.manager({"traffic_enabled": False})
+        self.fail_clip = {0, 1}
+        results = self.record_union(em)
+        passage = self.passage(em)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["track_id"], 5)
+        self.assertIsNone(row["clip_path"])
+        (result,) = results
+        self.assertFalse(result[-1], "union_ok")
+        self.assertEqual(em.status()["union_clip_fallbacks"], 1)
+        self.assertTrue(passage["claimed"])
+
+    def test_memory_passage_union_ok_when_union_clip_saved(self):
+        em = self.manager({"traffic_enabled": False})
+        results = self.record_union(em)
+        self.passage(em)
+        self.trigger(em)
+        self.assertTrue(results[0][-1])
+        self.assertEqual(em.status()["union_clip_fallbacks"], 0)
 
     # -- Voz en el audio que la unión agrega (H1) ------------------------
     VOICE = 1.0
@@ -518,6 +553,31 @@ class PassageGatingTest(unittest.TestCase):
         self.assertEqual(row["kind"], "both")
         self.assertEqual(row["audio_muted"], 1)
         self.assertTrue(self.clip_calls[0]["mute"])
+
+    def test_passage_inside_noise_window_voice_at_start_mutes_union(self):
+        # Caso normal: pasaje [8.5, 10.5] dentro de la ventana del ruido
+        # [8, 12]. La unión no agrega nada fuera de esa ventana, y el disparo
+        # dBA no clasificó su audio.
+        em = self.manager_16k({"traffic_enabled": False})
+        self.with_real_classifier(em, voice_between=(8.5, 9.0))
+        self.passage(em, enter=8.5, exit_=10.5)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["audio_muted"], 1)
+        self.assertTrue(self.clip_calls[0]["mute"])
+
+    def test_union_fallback_noise_clip_is_muted_too(self):
+        # Si la unión falla, el clip del ruido también contiene el pasaje.
+        em = self.manager_16k({"traffic_enabled": False})
+        self.with_real_classifier(em, voice_between=(8.5, 9.0))
+        self.fail_clip = {0}
+        self.passage(em, enter=8.5, exit_=10.5)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(len(self.clip_calls), 2)
+        self.assertTrue(self.clip_calls[1]["mute"])
+        self.assertEqual(row["audio_muted"], 1)
 
     def test_memory_passage_voice_in_the_gap_mutes_union(self):
         # Entre el fin del pasaje (5) y el inicio de la ventana del ruido (8)
@@ -585,6 +645,23 @@ class PassageGatingTest(unittest.TestCase):
             self.assertIsNone(row[key], key)
         self.assertFalse(passage["claimed"])
         self.assertTrue(Path(row["clip_path"]).exists())
+
+    def test_memory_passage_retry_insert_failure_does_not_raise(self):
+        em = self.manager({"traffic_enabled": False})
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "CREATE TRIGGER no_events BEFORE INSERT ON events"
+            " BEGIN SELECT RAISE(ABORT, 'base bloqueada'); END"
+        )
+        conn.commit()
+        conn.close()
+        passage = self.passage(em)
+        self.trigger(em)  # no debe lanzar: mataría el worker
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(passage["claimed"])
+        self.assertEqual(len(self.clip_calls), 1)
+        self.assertEqual(list(em.clips_dir.glob("event_*.mp4")), [], "clip huérfano")
+        self.assertEqual(em.status()["events_lost"], 1)
 
 
 if __name__ == "__main__":
