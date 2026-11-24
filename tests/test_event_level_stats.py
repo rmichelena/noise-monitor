@@ -94,6 +94,16 @@ class LevelStatsTests(unittest.TestCase):
             self.assertGreaterEqual(audio._db_history.maxlen, needed)
             self.assertEqual(audio._db_history.maxlen, audio.buffer_maxlen)
 
+    def test_all_silent_blocks_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)
+            floor = MIN_DB + audio.calibration_offset
+            audio._db_history.extend([(1.0, floor), (1.1, floor)])
+            with self.assertLogs("src.audio_monitor", level="WARNING") as logs:
+                stats = audio.level_stats([(1.0, None), (1.1, None)])
+            self.assertIsNone(stats)
+            self.assertTrue(any("sin bloques audibles" in line for line in logs.output))
+
     def test_explicit_history_snapshot_is_used(self):
         with tempfile.TemporaryDirectory() as directory:
             audio = AudioMonitor(config=example_config(directory), base_dir=ROOT)

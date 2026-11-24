@@ -197,8 +197,12 @@ class AudioMonitor:
         # incluye el offset de calibración, porque db ya lo lleva aplicado.
         floor = MIN_DB + self.calibration_offset
         audible = [value for value in values if value > floor]
-        average_source = audible or values
-        energy = sum(10 ** (value / 10) for value in average_source) / len(average_source)
+        if not audible:
+            # Clip íntegramente en silencio digital: un promedio de -120 dB
+            # junto a un db_max del disparo sería una fila incoherente.
+            logger.warning("Clip sin bloques audibles; se conserva el nivel del disparo")
+            return None
+        energy = sum(10 ** (value / 10) for value in audible) / len(audible)
         return {"max": max(values), "avg": 10 * math.log10(energy), "count": len(values)}
 
     @property
