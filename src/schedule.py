@@ -55,7 +55,11 @@ class Schedule:
         end = _parse_hhmm(raw.get("end", DEFAULT_END), f"{name}.end")
         if start == end:
             raise ValueError(f"{name}: start y end iguales ({raw.get('start')}) dejan la ventana vacía")
-        days = raw.get("days") or []
+        # Sólo `null`/ausente significa «todos los días»: un `false`, `0` o
+        # `""` no puede caer en el default más amplio.
+        days = raw.get("days")
+        if days is None:
+            days = []
         if not isinstance(days, list) or any(
             isinstance(d, bool) or not isinstance(d, int) or not 1 <= d <= 7 for d in days
         ):

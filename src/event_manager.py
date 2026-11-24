@@ -332,17 +332,32 @@ class EventManager:
     # ------------------------------------------------------------------
     # Passage processing (from tracker via VideoMonitor.passage_queue)
     # ------------------------------------------------------------------
-    def _passage_has_speech(self, audio_list: list) -> bool:
-        """Si el audio de un pasaje debe ir mudo: hay voz, o no se pudo saber."""
+    def _passage_has_speech(
+        self, audio_list: list, start: float | None = None, end: float | None = None,
+    ) -> bool:
+        """Si el audio de un pasaje debe ir mudo: hay voz, o no se pudo saber.
+
+        Recorre todo el tramo con `scan_all_speech`: `classify` sólo mira los
+        últimos 0,975 s, y en un clip unión esa cola es el post-roll del
+        ruido, no el pasaje. Con `start`/`end` se clasifican sólo los bloques
+        que se solapan con [start, end] (los timestamps marcan el fin de cada
+        bloque).
+        """
         classifier = getattr(self.audio_monitor, "_classifier", None)
         if classifier is None or not audio_list:
             return False
+        sample_rate = self.config["audio"]["sample_rate"]
+        blocks = [
+            block for ts, block in audio_list
+            if (start is None or ts >= start)
+            and (end is None or ts - len(block) / sample_rate <= end)
+        ]
+        if not blocks:
+            return False
         try:
-            window = np.concatenate([b for _, b in audio_list], axis=0)
-            sound_class, _, _ = classifier.classify(
-                window, source_sr=self.config["audio"]["sample_rate"]
-            )
-            return sound_class in SPEECH_CLASSES
+            window = np.concatenate(blocks, axis=0)
+            _, speech = classifier.classify_event(window, sample_rate, 0, scan_all_speech=True)
+            return speech
         except Exception:
             logger.warning("Pasaje sin audio porque falló la clasificación", exc_info=True)
             return True
@@ -540,7 +555,7 @@ class EventManager:
         (clip_path, duration_ms, audio_muted, start_ts, end_ts); clip_path es
         None si fallaron los dos. `check_speech`: el tramo del pasaje no pasó
         por ninguna detección de voz (no tuvo clip propio), así que se
-        clasifica el audio unión antes de decidir si va mudo.
+        clasifica lo que la unión agrega fuera de la ventana del ruido.
         """
         noise_start, noise_end = noise_window
         union_start = min(noise_start, passage["timestamp_enter"])
@@ -551,7 +566,13 @@ class EventManager:
             video_list, self.video_monitor.video_buffer, union_start, union_end)
         sample_rate = self.config["audio"]["sample_rate"]
         if check_speech and not union_muted:
-            union_muted = self._passage_has_speech(union_audio)
+            # Lo que la unión agrega fuera de la ventana del ruido (el pasaje
+            # y el hueco que lo separa del ruido): la ventana del ruido ya
+            # pasó por su propia clasificación (`noise_muted`).
+            union_muted = any(
+                self._passage_has_speech(union_audio, a, b)
+                for a, b in ((union_start, noise_start), (noise_end, union_end)) if b > a
+            )
 
         clip_path, duration_ms, muted = None, None, union_muted
         start_ts, end_ts = union_start, union_end
@@ -798,22 +819,32 @@ class EventManager:
             "start_ts": t_start, "end_ts": t_end, "vehicle_class": culprit, "lane": lane,
             "audio_muted": 1 if mute_audio else 0,
         }
+        noise_attribution = {"vehicle_class": culprit, "lane": lane}
         if passage is not None and passage.get("db_id") is None:
             # Pasaje sin fila (tráfico apagado, fuera de horario, clase no
             # registrada o traffic_only_with_noise): el evento nace `both`.
-            kind = "both"
-            clip_path, duration_ms, muted, start_ts, end_ts = self._union_clip(
-                passage, audio_list, video_list, (t_start, t_end), timestamp,
-                noise_muted=mute_audio, union_muted=mute_audio,
-                unique_name=perceptual, label=f"del pasaje {passage.get('track_id')}",
-                check_speech=True,
-            )
-            row.update({
-                "start_ts": start_ts, "end_ts": end_ts, "audio_muted": 1 if muted else 0,
-                "vehicle_class": passage["vehicle_class"], "lane": passage.get("lane"),
-                "direction": passage.get("direction"), "speed_kmh": passage.get("speed_kmh"),
-                "detection_score": passage.get("detection_score"), "track_id": passage.get("track_id"),
-            })
+            try:
+                clip_path, duration_ms, muted, start_ts, end_ts = self._union_clip(
+                    passage, audio_list, video_list, (t_start, t_end), timestamp,
+                    noise_muted=mute_audio, union_muted=mute_audio,
+                    unique_name=perceptual, label=f"del pasaje {passage.get('track_id')}",
+                    check_speech=True,
+                )
+            except Exception:
+                # Igual que el upgrade: nunca perder el evento acústico. Se
+                # libera el pasaje y el ruido sigue como `noise` con su clip.
+                logger.exception(
+                    "Falló el both del pasaje %s; el ruido se guarda aparte", passage.get("track_id"),
+                )
+                passage["claimed"] = False
+            else:
+                kind = "both"
+                row.update({
+                    "start_ts": start_ts, "end_ts": end_ts, "audio_muted": 1 if muted else 0,
+                    "vehicle_class": passage["vehicle_class"], "lane": passage.get("lane"),
+                    "direction": passage.get("direction"), "speed_kmh": passage.get("speed_kmh"),
+                    "detection_score": passage.get("detection_score"), "track_id": passage.get("track_id"),
+                })
         elif passage is not None:
             try:
                 event_id = self._upgrade_to_both(
@@ -849,10 +880,30 @@ class EventManager:
                     "sound_labels_json": fields["sound_labels_json"], "confidence": confidence,
                     "duration_ms": duration_ms, "clip_path": clip_path,
                 })
-                cur = conn.execute(
-                    f"INSERT INTO events ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
-                    tuple(row.values()),
-                )
+                try:
+                    cur = conn.execute(
+                        f"INSERT INTO events ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                        tuple(row.values()),
+                    )
+                except sqlite3.Error:
+                    if kind != "both":
+                        raise
+                    # El `both` nacido en memoria no entró: se libera el pasaje
+                    # y se reintenta como `noise` con el clip ya guardado (la
+                    # unión contiene la ventana del ruido).
+                    logger.exception(
+                        "No se pudo insertar el both del pasaje %s; se reintenta como noise",
+                        passage.get("track_id"),
+                    )
+                    passage["claimed"] = False
+                    kind = "noise"
+                    for key in ("direction", "speed_kmh", "detection_score", "track_id"):
+                        row.pop(key, None)
+                    row.update(noise_attribution, kind=kind)
+                    cur = conn.execute(
+                        f"INSERT INTO events ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                        tuple(row.values()),
+                    )
                 event_id = cur.lastrowid
             if perceptual and trigger.get("trigger_decision"):
                 conn.execute(

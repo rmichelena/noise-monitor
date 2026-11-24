@@ -22,6 +22,25 @@ from .vehicle_tracker import VEHICLE_CLASSES
 
 _BOOL_KEYS = ("noise_enabled", "noise_only_with_traffic", "traffic_enabled", "traffic_only_with_noise")
 
+# Listas cerradas: una clave mal escrita (p. ej. `noise_enable: false`) no
+# puede dejar encendida la sección que se quería apagar.
+TRIGGER_KEYS = frozenset({
+    "criterion", "psychoacoustic", "peak_db", "sustained_db", "sustained_duration_ms",
+    "correlation_db", "cooldown_seconds", "noise_schedule", "traffic_schedule", *_BOOL_KEYS,
+})
+TRACKER_KEYS = frozenset({
+    "max_distance", "max_disappeared", "min_track_seconds", "min_displacement",
+    "max_track_seconds", "record_classes",
+})
+
+
+def _reject_unknown(section, allowed: frozenset, name: str) -> None:
+    if not isinstance(section, dict):
+        raise ValueError(f"'{name}' debe ser una sección")
+    unknown = set(section) - allowed
+    if unknown:
+        raise ValueError(f"{name}: claves desconocidas {sorted(unknown)} (válidas: {sorted(allowed)})")
+
 
 @dataclass(frozen=True)
 class TriggerPolicy:
@@ -36,7 +55,9 @@ class TriggerPolicy:
     @classmethod
     def from_config(cls, config: dict) -> "TriggerPolicy":
         """Lanza ValueError nombrando la clave si algo es inválido."""
-        triggers = config.get("triggers") or {}
+        triggers = config.get("triggers")
+        triggers = {} if triggers is None else triggers
+        _reject_unknown(triggers, TRIGGER_KEYS, "triggers")
         values = {}
         for key in _BOOL_KEYS:
             value = triggers.get(key, cls.__dataclass_fields__[key].default)
@@ -46,7 +67,9 @@ class TriggerPolicy:
         noise_schedule = Schedule.parse(triggers.get("noise_schedule"), "triggers.noise_schedule")
         traffic_schedule = Schedule.parse(triggers.get("traffic_schedule"), "triggers.traffic_schedule")
 
-        tracker = config.get("tracker") or {}
+        tracker = config.get("tracker")
+        tracker = {} if tracker is None else tracker
+        _reject_unknown(tracker, TRACKER_KEYS, "tracker")
         raw_classes = tracker.get("record_classes")
         if raw_classes is None:
             classes = frozenset(VEHICLE_CLASSES)

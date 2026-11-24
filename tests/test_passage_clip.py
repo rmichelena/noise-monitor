@@ -83,7 +83,7 @@ class PassageClipTest(unittest.TestCase):
 
     def test_error_de_clasificacion_guarda_pasaje_mudo(self):
         classifier = MagicMock()
-        classifier.classify.side_effect = RuntimeError("Coral no disponible")
+        classifier.classify_event.side_effect = RuntimeError("Coral no disponible")
         self.em.audio_monitor._classifier = classifier
         clip, _, muted = self.em._save_passage_clip(self.passage)
         self.assertTrue(clip)

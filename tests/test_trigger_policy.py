@@ -18,6 +18,7 @@ import copy
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -27,6 +28,7 @@ from queue import Empty, Queue
 from unittest.mock import MagicMock
 
 import numpy as np
+import yaml
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
@@ -39,6 +41,7 @@ except Exception:  # pragma: no cover - depende del host
     _stub.InputStream = object  # type: ignore[attr-defined]
     sys.modules["sounddevice"] = _stub
 
+from src.audio_classifier import AudioClassifier  # noqa: E402
 from src.audio_monitor import AudioMonitor  # noqa: E402
 from src.event_manager import EventManager  # noqa: E402
 from src.schedule import Schedule  # noqa: E402
@@ -170,6 +173,41 @@ class PolicyConfigTest(unittest.TestCase):
         # Sólo eventos `both`: combinación legítima.
         self.cfg["triggers"].update(noise_only_with_traffic=True, traffic_only_with_noise=True)
         validate_config(self.cfg)
+
+    def test_falsy_days_are_rejected_not_widened(self):
+        # Sólo null/ausente es «todos los días»; un falsy no se amplía en silencio.
+        for days in (False, 0, "", {}):
+            with self.subTest(days=days):
+                cfg = copy.deepcopy(self.cfg)
+                cfg["triggers"]["noise_schedule"] = {"enabled": True, "start": "22:00", "end": "07:00", "days": days}
+                with self.assertRaisesRegex(ConfigError, "triggers.noise_schedule.days"):
+                    validate_config(cfg)
+        self.cfg["triggers"]["noise_schedule"] = {"enabled": True, "start": "22:00", "end": "07:00", "days": None}
+        self.assertEqual(TriggerPolicy.from_config(self.cfg).noise_schedule.days, frozenset())
+
+    def test_unknown_keys_are_rejected(self):
+        # Un typo no puede dejar encendida la sección que se quería apagar.
+        for section, key in (("triggers", "noise_enable"), ("triggers", "trafic_enabled"),
+                             ("tracker", "record_class")):
+            with self.subTest(key=key):
+                cfg = copy.deepcopy(self.cfg)
+                cfg[section][key] = False
+                with self.assertRaisesRegex(ConfigError, f"{section}: claves desconocidas.*{key}"):
+                    validate_config(cfg)
+
+    def test_every_known_key_is_accepted(self):
+        # Riesgo espejo de la lista cerrada: ninguna clave legítima se rechaza.
+        self.cfg["triggers"].update(
+            criterion="dba", psychoacoustic={}, noise_enabled=True, noise_only_with_traffic=False,
+            traffic_enabled=True, traffic_only_with_noise=False,
+            noise_schedule={"enabled": False}, traffic_schedule={"enabled": False},
+        )
+        self.cfg["tracker"]["record_classes"] = ["car"]
+        validate_config(self.cfg)
+        for name in ("config.example.yaml", "config.simulate.yaml.example"):
+            with self.subTest(config=name):
+                raw = yaml.safe_load((PROJECT_DIR / name).read_text(encoding="utf-8"))
+                TriggerPolicy.from_config(raw)
 
     def test_flags_of_a_disabled_section_do_not_block(self):
         # El flag de una sección apagada no exige nada a la otra.
@@ -431,15 +469,122 @@ class PassageGatingTest(unittest.TestCase):
         self.assertAlmostEqual(row["end_ts"], self.base + 10.0 + POST)
         self.assertTrue(Path(row["clip_path"]).exists())
 
-    def test_memory_passage_audio_is_checked_for_speech(self):
-        em = self.manager({"traffic_enabled": False})
-        em.audio_monitor._classifier = MagicMock()
-        em.audio_monitor._classifier.classify.return_value = ("Speech", "human", 0.9)
-        self.passage(em)
+    # -- Voz en el audio que la unión agrega (H1) ------------------------
+    VOICE = 1.0
+
+    def with_real_classifier(self, em, voice_between=None):
+        """`AudioClassifier` real con sólo el intérprete falso.
+
+        Los bloques son de 0,1 s a 16 kHz; los que caen en `voice_between`
+        llevan la marca VOICE, y el intérprete marca Speech si la ve en los
+        15600 muestras que recibe. Así el recorte de `predict_scores` queda
+        dentro del test: clasificar sólo la cola de la unión no la ve.
+        """
+        sr = em.config["audio"]["sample_rate"]
+        block = sr // 10
+        em.audio_monitor.audio_buffer = [
+            (self.base + i * 0.1,
+             np.full(block, self.VOICE if voice_between and voice_between[0] < i * 0.1 <= voice_between[1]
+                     else 0.0, dtype=np.float32))
+            for i in range(181)
+        ]
+        clf = AudioClassifier.__new__(AudioClassifier)
+        clf.labels = ["Speech", "Car", "Silence"]
+        clf.min_score = 0.3
+        clf.category_map = {}
+        clf._build_reverse_map()
+        clf._lock = threading.Lock()
+        clf.inference_count = 0
+        clf.inference_ms_total = 0.0
+        clf.active_backend = "cpu"
+        clf.fallback_to_cpu = False
+        clf._invoke = lambda audio: np.array(
+            [0.9 if (audio == self.VOICE).any() else 0.0, 0.5, 0.0], dtype=np.float32)
+        em.audio_monitor._classifier = clf
+        return clf
+
+    def manager_16k(self, triggers):
+        self.cfg["audio"]["sample_rate"] = 16000
+        return self.manager(triggers)
+
+    def test_memory_passage_voice_at_start_mutes_union(self):
+        # Voz al inicio del pasaje [3, 5]; el ruido dispara a los 10 s (ventana
+        # [8, 12]). La cola de la unión es post-roll del ruido, sin voz.
+        em = self.manager_16k({"traffic_enabled": False})
+        self.with_real_classifier(em, voice_between=(3.0, 4.0))
+        self.passage(em, enter=3.0, exit_=5.0)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["audio_muted"], 1)
+        self.assertTrue(self.clip_calls[0]["mute"])
+
+    def test_memory_passage_voice_in_the_gap_mutes_union(self):
+        # Entre el fin del pasaje (5) y el inicio de la ventana del ruido (8)
+        # tampoco pasó ninguna clasificación, y entra en el clip.
+        em = self.manager_16k({"traffic_enabled": False})
+        self.with_real_classifier(em, voice_between=(6.0, 7.0))
+        self.passage(em, enter=3.0, exit_=5.0)
         self.trigger(em)
         (row,) = self.rows()
         self.assertEqual(row["audio_muted"], 1)
-        self.assertTrue(self.clip_calls[0]["mute"])
+
+    def test_memory_passage_without_voice_keeps_audio(self):
+        em = self.manager_16k({"traffic_enabled": False})
+        clf = self.with_real_classifier(em)
+        self.passage(em, enter=3.0, exit_=5.0)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["audio_muted"], 0)
+        self.assertGreater(clf.inference_count, 0)
+
+    def test_upgrade_of_clipless_passage_checks_voice_at_start(self):
+        # Pasaje `traffic` cuyo clip falló: el upgrade a `both` es la primera
+        # vez que su audio pasa por la detección de voz.
+        em = self.manager_16k({})
+        em._save_passage_clip = lambda passage: ("", 0, False)
+        self.with_real_classifier(em, voice_between=(3.0, 4.0))
+        self.passage(em, enter=3.0, exit_=5.0)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["audio_muted"], 1)
+
+    # -- Fallos de la rama `both` nacida en memoria (M3) ------------------
+    def test_memory_passage_union_failure_keeps_noise_and_releases_passage(self):
+        em = self.manager({"traffic_enabled": False})
+
+        def broken_union(*args, **kwargs):
+            raise RuntimeError("buffer roto")
+
+        em._union_clip = broken_union
+        passage = self.passage(em)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "noise")
+        self.assertIsNone(row["track_id"])
+        self.assertFalse(passage["claimed"])
+        self.assertEqual(len(self.clip_calls), 1, "clip normal del ruido")
+        self.assertTrue(Path(row["clip_path"]).exists())
+
+    def test_memory_passage_insert_failure_keeps_noise_and_releases_passage(self):
+        em = self.manager({"traffic_enabled": False})
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "CREATE TRIGGER no_both BEFORE INSERT ON events WHEN NEW.kind = 'both'"
+            " BEGIN SELECT RAISE(ABORT, 'both rechazado'); END"
+        )
+        conn.commit()
+        conn.close()
+        passage = self.passage(em)
+        self.trigger(em)
+        (row,) = self.rows()
+        self.assertEqual(row["kind"], "noise")
+        self.assertEqual(row["vehicle_class"], "car")
+        for key in ("track_id", "direction", "speed_kmh", "detection_score"):
+            self.assertIsNone(row[key], key)
+        self.assertFalse(passage["claimed"])
+        self.assertTrue(Path(row["clip_path"]).exists())
 
 
 if __name__ == "__main__":
