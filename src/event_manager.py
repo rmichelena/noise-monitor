@@ -563,7 +563,7 @@ class EventManager:
         except Exception:
             logger.exception("Falló el clip unión del evento #%d", event_id)
             clip_path = None
-        if clip_path:
+        if clip_path and union_audio and union_video:
             covered = [ts for ts, _ in union_audio[:1] + union_video[:1]]
             covered_end = [ts for ts, _ in union_audio[-1:] + union_video[-1:]]
             start_ts = max(union_start, min(covered))
@@ -595,6 +595,11 @@ class EventManager:
                 (clip_path, duration_ms, 1 if muted else 0, start_ts, end_ts, event_id),
             )
             conn.commit()
+        except sqlite3.Error:
+            # El reclamo ya está commiteado: propagar la excepción haría que
+            # el llamador inserte un `noise` duplicado. Se conserva el clip
+            # anterior y la fila `both` con los metadatos ya escritos.
+            logger.exception("No se pudo actualizar el clip unión del evento #%d", event_id)
         finally:
             conn.close()
 
@@ -733,10 +738,20 @@ class EventManager:
         event_id = None
         kind = "noise"
         if passage is not None:
-            event_id = self._upgrade_to_both(
-                passage, fields, audio_list, video_list, (t_start, t_end),
-                mute_audio, unique_name=perceptual,
-            )
+            try:
+                event_id = self._upgrade_to_both(
+                    passage, fields, audio_list, video_list, (t_start, t_end),
+                    mute_audio, unique_name=perceptual,
+                )
+            except Exception:
+                # Nunca perder el evento acústico por un fallo del upgrade:
+                # se libera el reclamo y se guarda como `noise` aparte.
+                logger.exception(
+                    "Falló el upgrade del pasaje #%s; el ruido se guarda aparte",
+                    passage.get("db_id"),
+                )
+                passage["claimed"] = False
+                event_id = None
             if event_id is not None:
                 kind = "both"
 

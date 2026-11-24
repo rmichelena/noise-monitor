@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -170,6 +170,15 @@ class UnifiedWriteTest(unittest.TestCase):
         self.assertNotEqual(Path(row["clip_path"]), old_clip)
         self.assertFalse(old_clip.exists(), "el clip previo del pasaje debe borrarse")
         self.assertEqual(row["duration_ms"], 1000)
+
+    def test_fallo_del_upgrade_guarda_el_ruido_aparte(self):
+        self._passage(3.0, 9.0, track_id=5)
+        with patch.object(self.em, "_upgrade_to_both", side_effect=RuntimeError("boom")):
+            self._trigger(10.0)
+        rows = self._rows()
+        self.assertEqual([row["kind"] for row in rows], ["traffic", "noise"])
+        self.assertTrue(all(row["clip_path"] for row in rows))
+        self.assertFalse(any(p.get("claimed") for p in self.em._recent_passages))
 
     def test_union_incluye_el_preroll_del_ruido(self):
         # Ruido antes que el pasaje: la unión arranca en el pre-roll del ruido.
