@@ -278,6 +278,18 @@ def validate_config(
             if key in tracker:
                 _check_number("tracker", key, tracker[key], lo, None)
 
+    # Habilitación, horarios y clases registradas (src/trigger_policy.py).
+    from .trigger_policy import TriggerPolicy
+
+    try:
+        policy = TriggerPolicy.from_config(config)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    if not policy.noise_enabled and not policy.traffic_enabled:
+        log.warning("triggers.noise_enabled y triggers.traffic_enabled en false: no se guardará ningún evento")
+    elif policy.traffic_enabled and not policy.record_classes:
+        log.warning("tracker.record_classes vacío: no se guardará ningún pasaje como traffic")
+
     speed_cfg = config.get("speed")
     if speed_cfg is not None and not isinstance(speed_cfg, dict):
         raise ConfigError("'speed' debe ser una sección")

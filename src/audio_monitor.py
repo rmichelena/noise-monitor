@@ -21,6 +21,7 @@ import numpy as np
 from scipy.io import wavfile
 
 from .perceptual_trigger import PerceptualTrigger, Settings
+from .trigger_policy import TriggerPolicy
 from .utils import MIN_DB, apply_a_weighting, load_config, resolve_path, rms_to_db
 
 if TYPE_CHECKING:
@@ -117,6 +118,10 @@ class AudioMonitor:
 
         self._running = False
         self._event_queue_warned = False
+        # Ruido apagado o fuera de horario: se sigue midiendo y bufferizando,
+        # sólo no se emiten disparos (src/trigger_policy.py).
+        self.trigger_policy = TriggerPolicy.from_config(self.config)
+        self.noise_gated = 0
         self._stream: sd.InputStream | None = None
         self._thread: threading.Thread | None = None
 
@@ -133,7 +138,7 @@ class AudioMonitor:
         self._db_history: deque[tuple[float, float]] = deque(maxlen=max(600, self.buffer_maxlen))
 
         self._perceptual_trigger = (
-            PerceptualTrigger(settings, self.sample_rate, self.block_size, self.event_queue.put_nowait)
+            PerceptualTrigger(settings, self.sample_rate, self.block_size, self._emit_trigger)
             if settings else None
         )
 
@@ -211,12 +216,25 @@ class AudioMonitor:
         with self._lock:
             return self._current_db
 
+    def _emit_trigger(self, event: dict) -> None:
+        """Encola un disparo si la sección ruido está activa en su instante.
+
+        El gating va acá y no antes de evaluar: el detector psicoacústico y
+        el contador de sostenido siguen viendo el audio continuo, así que al
+        entrar en horario no arrancan con una ventana partida.
+        """
+        if not self.trigger_policy.noise_active(event["timestamp"]):
+            self.noise_gated += 1
+            return
+        self.event_queue.put_nowait(event)
+
     def trigger_status(self):
         status = (
             self._perceptual_trigger.status()
             if self._perceptual_trigger
             else {"criterion": "dba", "peak_db": self.peak_db, "sustained_db": self.sustained_db}
         )
+        status["noise_gated"] = self.noise_gated
         manager = getattr(self, "event_manager", None)
         if manager is not None:
             status.update(manager.status())
@@ -278,7 +296,7 @@ class AudioMonitor:
         if triggered:
             event = {"type": trigger_type, "db": db, "timestamp": timestamp, "db_avg": db}
             try:
-                self.event_queue.put_nowait(event)
+                self._emit_trigger(event)
             except Full:
                 if not self._event_queue_warned:
                     logger.warning("Cola de eventos llena; se descartó un disparo dBA")
