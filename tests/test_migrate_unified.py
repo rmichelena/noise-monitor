@@ -276,6 +276,16 @@ class TransactionTest(MigrationFixture):
         self.assertEqual(self.run_migration(), {"status": "already_migrated"})
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1)
 
+    def test_legacy_sin_events_aborta(self):
+        # Si alguien borra `events` después de migrar, quedarían sólo las
+        # legacy: no es una base migrada válida y el script no debe decir OK.
+        self.noise(10)
+        self.run_migration()
+        self.conn.execute("DROP TABLE events")
+        self.conn.commit()
+        with self.assertRaises(MigrationError):
+            self.run_migration()
+
     def test_events_con_filas_aborta_salvo_force(self):
         self.noise(10)
         self.conn.executescript(migrate_unified.EVENTS_DDL)
@@ -363,7 +373,7 @@ class CliTest(MigrationFixture):
         self.noise(10, ts="ayer")
         bad = self.cli()
         self.assertEqual(bad.returncode, 1)
-        self.assertIn("ROLLBACK", bad.stderr)
+        self.assertIn("migración abortada", bad.stderr)
 
 
 if __name__ == "__main__":

@@ -290,6 +290,12 @@ def migrate(conn: sqlite3.Connection, pre: float, post: float,
     present = [t for t in SOURCES if _table_exists(conn, t)]
     legacy = [t for t in SOURCES if _table_exists(conn, f"{t}_legacy")]
     if not present and len(legacy) == len(SOURCES):
+        if not _table_exists(conn, "events"):
+            # Sin `events` no hay migración válida: sólo quedan las legacy.
+            # Es el caso de una base a la que le borraron la tabla nueva a mano.
+            raise MigrationError(
+                "existen tablas *_legacy pero falta events; restaurar el backup previo"
+            )
         return {"status": "already_migrated"}
     if len(present) != len(SOURCES):
         raise MigrationError(f"faltan tablas de origen: {sorted(set(SOURCES) - set(present))}")
@@ -354,7 +360,7 @@ def main() -> int:
     try:
         counts = migrate(conn, pre, post, force=args.force, dry_run=args.dry_run)
     except (MigrationError, sqlite3.Error) as exc:
-        print(f"migración abortada (ROLLBACK): {exc}", file=sys.stderr)
+        print(f"migración abortada: {exc}", file=sys.stderr)
         return 1
     finally:
         conn.close()
