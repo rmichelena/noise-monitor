@@ -497,6 +497,15 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
             raise ValueError("video.yolo_model_path es obligatorio con detector=yolo")
     # validate_config incluye TriggerPolicy.from_config: horarios, días, clases
     # y coherencia de flags se validan sobre la config completa resultante.
+    validate_startable(config, base_dir)
+    return config, changed
+
+
+def validate_startable(config: dict, base_dir: Path) -> None:
+    """Las comprobaciones con las que main.py se negaría a arrancar (sale 78).
+
+    Lanza ValueError/ConfigError. La usan el guardado y el reinicio desde la UI.
+    """
     validate_config(config, base_dir=base_dir)
     _validate_geometry(config)
     if Settings.load(config) is not None:
@@ -509,7 +518,6 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
                 "el criterio psicoacústico requiere phonometry (requirements-trigger.txt) "
                 "en el entorno del servicio"
             ) from exc
-    return config, changed
 
 
 def save_config(path: Path, config: Any) -> Path:

@@ -32,7 +32,10 @@ import logging
 import math
 import os
 import secrets
+import shutil
 import sqlite3
+import subprocess
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,10 +46,10 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
-from src.utils import ConfigError, resolve_path
+from src.utils import ConfigError, load_config, resolve_path
 
 from .analysis import analysis_router
-from .settings import public_payload, read_config, update_config
+from .settings import public_payload, read_config, update_config, validate_startable
 
 PAGE_SIZE = 20
 # Misma escala que el overlay de los clips.
@@ -84,6 +87,15 @@ PASSAGES_CSV_COLUMNS = [
 # Fin de la ventana del evento en el mismo formato ISO local que `timestamp`.
 TIMESTAMP_END = "strftime('%Y-%m-%dT%H:%M:%S', end_ts, 'unixepoch', 'localtime') AS timestamp_end"
 
+
+
+# Reinicio desde /settings. El proceso web corre como el usuario del servicio,
+# con sudo sin contraseña; --no-block encola el reinicio y vuelve enseguida.
+RESTART_UNIT = "noise-monitor.service"
+RESTART_CMD = ["sudo", "-n", "systemctl", "--no-block", "restart", RESTART_UNIT]
+# `sudo -l <cmd>` comprueba sin ejecutar que sudo permite ese comando sin pedir clave.
+RESTART_PREFLIGHT = ["sudo", "-n", "-l", "systemctl", "--no-block", "restart", RESTART_UNIT]
+RESTART_DELAY_SECONDS = 1.0
 
 
 def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=None) -> FastAPI:
@@ -899,6 +911,57 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
             "backup": str(backup) if backup else None,
         }
 
+    # Distingue el proceso nuevo del viejo: la página espera a que cambie.
+    started_at = time.time()
+    restart_state = {"pending": False}
+    restart_lock = threading.Lock()
+
+    def _run_restart() -> None:
+        try:
+            result = subprocess.run(RESTART_CMD, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.error("No se pudo reiniciar %s: %s", RESTART_UNIT, exc)
+        else:
+            if result.returncode == 0:
+                logger.info("Reinicio de %s encolado desde /settings", RESTART_UNIT)
+                return
+            logger.error("Reinicio de %s falló (rc=%s): %s", RESTART_UNIT,
+                         result.returncode, result.stderr.strip())
+        with restart_lock:
+            restart_state["pending"] = False
+
+    @app.post("/api/settings/restart", status_code=202)
+    def settings_restart(request: Request, _: None = Depends(require_settings)):
+        _reject_cross_site(request)
+        # La config que leerá el servicio al arrancar, con su mismo loader: si
+        # no arrancaría, no se reinicia (el servicio actual sigue andando).
+        try:
+            validate_startable(load_config(settings_path), base_dir)
+        except (FileNotFoundError, ValueError, ConfigError) as exc:
+            raise HTTPException(status_code=400, detail=f"config.yaml no arrancaría: {exc}") from exc
+        with restart_lock:
+            if restart_state["pending"]:
+                return {"restarting": True, "delay_seconds": RESTART_DELAY_SECONDS}
+            if shutil.which("sudo") is None or shutil.which("systemctl") is None:
+                logger.error("Reinicio desde /settings: falta sudo o systemctl en PATH")
+                raise HTTPException(status_code=500, detail="No hay sudo/systemctl para reiniciar el servicio")
+            try:
+                check = subprocess.run(RESTART_PREFLIGHT, capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.error("Reinicio desde /settings: sudo no respondió: %s", exc)
+                raise HTTPException(status_code=500, detail="No se pudo comprobar el permiso de reinicio") from exc
+            if check.returncode != 0:
+                logger.error("Reinicio desde /settings: sudo no lo permite sin clave (rc=%s): %s",
+                             check.returncode, check.stderr.strip())
+                raise HTTPException(status_code=500, detail="sudo no permite reiniciar el servicio sin contraseña")
+            restart_state["pending"] = True
+            # Se responde primero: el reinicio mata a este mismo proceso.
+            timer = threading.Timer(RESTART_DELAY_SECONDS, _run_restart)
+            timer.daemon = True
+            timer.start()
+        logger.info("Reinicio de %s pedido desde /settings", RESTART_UNIT)
+        return {"restarting": True, "delay_seconds": RESTART_DELAY_SECONDS}
+
     @app.get("/api/settings/snapshot")
     def settings_snapshot(_: None = Depends(require_settings)):
         getter = getattr(video_monitor, "latest_frame_jpeg", None)
@@ -909,7 +972,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     @app.get("/api/health")
     def api_health():
-        health = {"ok": True, "db": str(db_path), "db_exists": db_path.exists()}
+        health = {"ok": True, "db": str(db_path), "db_exists": db_path.exists(),
+                  "started_at": started_at}
         status = getattr(audio_monitor, "trigger_status", None)
         if status is not None:
             health["trigger"] = status()

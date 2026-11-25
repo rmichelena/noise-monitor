@@ -2,6 +2,7 @@
 {% block title %}Noise Monitor — ajustes{% endblock %}
 
 {% block content %}
+<p style="margin:0"><a class="a" href="/">← Volver al monitor</a></p>
 <style>
   .settings-grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
   .field { display:grid; gap:6px; align-content:start; }
@@ -131,10 +132,11 @@
     <div class="actions" style="margin-top:22px">
       <button type="submit">Guardar ajustes</button>
       <button type="button" class="secondary" id="settings-reload">Descartar cambios</button>
+      <button type="button" class="secondary" id="settings-restart">Reiniciar servicio</button>
       <span id="settings-msg"></span>
     </div>
     <div id="settings-errors"></div>
-    <p class="hint">Los cambios se guardan en <code>config.yaml</code> (con backup <code>.bak</code>) y se aplican al reiniciar el servicio. La cámara y el detector actuales se usan solo para dibujar la geometría.</p>
+    <p class="hint">Los cambios se guardan en <code>config.yaml</code> (con backup <code>.bak</code>) y se aplican al reiniciar el servicio (botón «Reiniciar servicio»; antes se comprueba que la configuración arranque). La cámara y el detector actuales se usan solo para dibujar la geometría.</p>
   </form>
 </section>
 
@@ -360,12 +362,59 @@ document.getElementById('settings-form').addEventListener('submit', async ev => 
     errors.textContent = '';
     msg.className = 'ok';
     const n = body.changed.length;
-    msg.textContent = n ? `Guardado (${n} ${n === 1 ? 'campo' : 'campos'}). Reiniciá noise-monitor para aplicar.` : 'Sin cambios.';
+    msg.textContent = n ? `Guardado (${n} ${n === 1 ? 'campo' : 'campos'}). Reiniciá el servicio para aplicar.` : 'Sin cambios.';
+    if (body.restart_required) {
+      restartBtn.textContent = 'Reiniciar ahora';
+      restartBtn.classList.remove('secondary');
+    }
   } catch (e) {
     msg.className = 'err'; msg.textContent = 'No se guardó nada.';
     errors.textContent = e.message;
   }
 });
+// Reinicio: el servidor valida la config y responde 202 antes de reiniciarse.
+// Se espera a que /api/health responda con otro `started_at` (proceso nuevo).
+const restartBtn = document.getElementById('settings-restart');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function healthStart() {
+  try {
+    const r = await fetch('/api/health', {cache:'no-store'});
+    return r.ok ? (await r.json()).started_at : null;
+  } catch (e) { return null; }
+}
+restartBtn.addEventListener('click', async () => {
+  if (!confirm('¿Reiniciar el servicio? La captura se detiene unos segundos.')) return;
+  restartBtn.disabled = true;
+  errors.textContent = '';
+  const before = await healthStart();
+  try {
+    const r = await fetch('/api/settings/restart', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.status !== 202) throw new Error(body.detail || r.statusText);
+  } catch (e) {
+    msg.className = 'err'; msg.textContent = 'No se reinició.';
+    errors.textContent = e.message;
+    restartBtn.disabled = false;
+    return;
+  }
+  msg.className = ''; msg.textContent = 'Reiniciando…';
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const now = await healthStart();
+    if (now !== null && now !== before) {
+      msg.className = 'ok'; msg.textContent = 'Servicio reiniciado.';
+      location.href = '/';
+      return;
+    }
+  }
+  msg.className = 'err';
+  msg.textContent = 'El servicio no volvió en 3 minutos: revisar journalctl -u noise-monitor.';
+  restartBtn.disabled = false;
+});
+
 document.getElementById('settings-reload').addEventListener('click', () => location.reload());
 INITIAL = collect();
 resizeCanvas();
