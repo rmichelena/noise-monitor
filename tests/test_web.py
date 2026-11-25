@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from support import create_events_table, example_config, insert_event  # noqa: E402
-from src.utils import init_database, resolve_path  # noqa: E402
+from src.utils import backfill_traffic_counts, init_database, resolve_path  # noqa: E402
 from web.app import create_app  # noqa: E402
 
 
@@ -89,6 +89,11 @@ class WebTestCase(unittest.TestCase):
             self.db_path, "traffic", self.now - timedelta(days=10), vehicle_class="truck",
             lane="right", direction="rtl", track_id=8, clip_path=str(outside),
         )
+        # Los conteos de tráfico salen de traffic_counts: el mismo relleno que
+        # hace init_database al crear la tabla sobre una base con pasajes.
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute("DELETE FROM traffic_counts")
+            backfill_traffic_counts(conn)
 
 
 class LiveApiTest(WebTestCase):
@@ -391,7 +396,9 @@ class UnifiedEventsTest(WebTestCase):
         self._make_both()
         payload = self.client.get("/api/live").json()
         self.assertEqual(payload["events_today"], 2)    # noise + both
-        self.assertEqual(payload["passages_today"], 2)  # traffic + both
+        # Pasajes = los medidos (traffic_counts), no las filas de events:
+        # subir un ruido a both no inventa un pasaje (S5).
+        self.assertEqual(payload["passages_today"], 1)
 
     def test_pin_works_for_every_kind(self):
         both = self._make_both()

@@ -254,8 +254,9 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         ev = _query(
             f"SELECT COUNT(*) n FROM events WHERE kind IN {NOISE_KINDS} AND timestamp >= ?", (day,)
         )
+        # Pasajes medidos (traffic_counts), no sólo los grabados como evento.
         ps = _query(
-            f"SELECT COUNT(*) n FROM events WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ?", (day,)
+            "SELECT COALESCE(SUM(count), 0) n FROM traffic_counts WHERE minute >= ?", (day,)
         )
         maxdb = _query(
             f"SELECT MAX(db_max) m FROM events WHERE kind IN {NOISE_KINDS} AND timestamp >= ?", (day,)
@@ -378,8 +379,8 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         end = datetime.now().replace(second=0, microsecond=0)
         start = end - timedelta(minutes=minutes - 1)
         rows = _query(
-            "SELECT substr(timestamp, 1, 16) m, vehicle_class c, COUNT(*) n"
-            f" FROM events WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ? GROUP BY m, c",
+            "SELECT minute m, vehicle_class c, SUM(count) n"
+            " FROM traffic_counts WHERE minute >= ? GROUP BY m, c",
             (start.strftime("%Y-%m-%dT%H:%M"),),
         )
         by_minute: dict[str, dict[str, int]] = {}
@@ -511,10 +512,11 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     def _passages_today() -> dict:
         day = _today_prefix()
+        # Conteo y velocidad de todos los pasajes medidos (traffic_counts);
+        # los flags de grabación no los afectan.
         rows = _query(
-            "SELECT vehicle_class, direction, COUNT(*) n FROM events"
-            f" WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ?"
-            " GROUP BY vehicle_class, direction",
+            "SELECT vehicle_class, direction, SUM(count) n FROM traffic_counts"
+            " WHERE minute >= ? GROUP BY vehicle_class, direction",
             (day,),
         )
         by_class: dict[str, int] = {}
@@ -543,15 +545,14 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         }
 
         sp = _query(
-            "SELECT AVG(speed_kmh) v, COUNT(speed_kmh) n, MAX(speed_kmh) mx"
-            f" FROM events WHERE kind IN {PASSAGE_KINDS} AND timestamp >= ?"
-            " AND speed_kmh IS NOT NULL",
+            "SELECT SUM(speed_sum) s, SUM(speed_n) n, MAX(speed_max) mx"
+            " FROM traffic_counts WHERE minute >= ?",
             (day,),
         )
         speed = None
         if sp and sp[0]["n"]:
             speed = {
-                "avg": round(sp[0]["v"], 1),
+                "avg": round(sp[0]["s"] / sp[0]["n"], 1),
                 "max": round(sp[0]["mx"], 1),
                 "n": sp[0]["n"],
             }

@@ -28,7 +28,7 @@ sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 
 import nightly_report  # noqa: E402
 from support import create_events_table, insert_event  # noqa: E402
-from src.utils import init_database  # noqa: E402
+from src.utils import backfill_traffic_counts, init_database  # noqa: E402
 
 
 def run(script: str, *args: str, cwd: Path = PROJECT_DIR) -> subprocess.CompletedProcess:
@@ -215,6 +215,8 @@ class NightlyReportTest(ScriptFixture):
         insert_event(self.db, "traffic", when, db_max=50.0, vehicle_class="car")
         insert_event(self.db, "both", when, db_max=78.0, trigger_type="peak",
                      vehicle_class="truck", direction="ltr")
+        with self.conn() as conn:  # los conteos que habría dejado el tracker
+            backfill_traffic_counts(conn)
         text = nightly_report.build_report(self.db, now - timedelta(hours=2), now)
         self.assertIn("ruido 1 · tránsito 1 · ambos 1", text)
         self.assertIn("**Ruido:** 2 eventos", text)

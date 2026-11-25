@@ -357,6 +357,39 @@ class UnmigratedDatabaseError(RuntimeError):
 PRE_UNIFIED_TABLES = ("noise_events", "vehicle_passages")
 
 
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def backfill_traffic_counts(conn: sqlite3.Connection) -> int:
+    """Rellena `traffic_counts` con los pasajes que ya están en `events`.
+
+    Se llama una sola vez, al crear la tabla: desde entonces cada pasaje se
+    cuenta al cerrarse, y volver a rellenar lo contaría dos veces. Antes de
+    esta tabla sólo había conteo de los pasajes que se grababan, así que el
+    historial es el que había (ralo si estaba `traffic_only_with_noise`).
+    Devuelve la cantidad de pasajes contados.
+    """
+    if not _table_exists(conn, "events"):
+        return 0
+    conn.execute(
+        """
+        INSERT INTO traffic_counts
+            (minute, vehicle_class, direction, count, speed_n, speed_sum, speed_max)
+        SELECT substr(timestamp, 1, 16), vehicle_class, COALESCE(direction, ''),
+               COUNT(*), COUNT(speed_kmh), COALESCE(SUM(speed_kmh), 0), MAX(speed_kmh)
+        FROM events
+        WHERE kind IN ('traffic', 'both') AND vehicle_class IS NOT NULL
+        GROUP BY 1, 2, 3
+        """
+    )
+    (total,) = conn.execute("SELECT COALESCE(SUM(count), 0) FROM traffic_counts").fetchone()
+    logger_module.info("traffic_counts creada: %d pasajes de events", total)
+    return total
+
+
 def _check_unified(conn: sqlite3.Connection, db_path: Path, schema_sql: str | None) -> None:
     """Falla si la base no está migrada o si `events` tiene otra forma.
 
@@ -434,6 +467,10 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
             conn.execute("PRAGMA busy_timeout=5000")
         except sqlite3.Error as exc:
             logger_module.warning("No se pudo activar WAL en %s: %s", db_path, exc)
+        # Schema y relleno de `traffic_counts` en una transacción de escritura:
+        # dos procesos que arrancan a la vez no pueden rellenarla dos veces.
+        conn.execute("BEGIN IMMEDIATE")
+        had_counts = _table_exists(conn, "traffic_counts")
         for statement in schema_sql.split(";"):
             # Strip comments and whitespace to check if there's real SQL
             lines = [
@@ -446,9 +483,16 @@ def init_database(config: dict | None = None, base_dir: Path | None = None) -> s
                 conn.execute(statement)
             except sqlite3.OperationalError:
                 pass  # tolerate migration errors
-        conn.commit()
         try:
+            # Antes del relleno: sobre una `events` con otra forma no se crea
+            # nada (el rollback deshace también el CREATE).
             _check_unified(conn, db_path, schema_sql)
+            if not had_counts and _table_exists(conn, "traffic_counts"):
+                backfill_traffic_counts(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

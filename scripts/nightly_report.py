@@ -70,6 +70,31 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
     passages = [r for r in rows if r["kind"] in ("traffic", "both")]
     by_kind = Counter(r["kind"] for r in rows)
 
+    # Conteo, sentido y velocidad de TODOS los pasajes medidos
+    # (traffic_counts), se hayan grabado o no como evento. El rango de dB sólo
+    # existe para los pasajes con fila en events.
+    by_class: Counter = Counter()
+    dirs: Counter = Counter()
+    speed_n, speed_sum, speed_max = 0, 0.0, None
+    lo_min, hi_min = start.strftime("%Y-%m-%dT%H:%M"), end.strftime("%Y-%m-%dT%H:%M")
+    has_counts = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='traffic_counts'"
+    ).fetchone()
+    if has_counts:
+        for r in conn.execute(
+            "SELECT vehicle_class, direction, count, speed_n, speed_sum, speed_max"
+            " FROM traffic_counts WHERE minute >= ? AND minute < ?",
+            (lo_min, hi_min),
+        ):
+            by_class[r["vehicle_class"]] += r["count"]
+            if r["direction"]:
+                dirs[r["direction"]] += r["count"]
+            speed_n += r["speed_n"]
+            speed_sum += r["speed_sum"]
+            if r["speed_max"] is not None and (speed_max is None or r["speed_max"] > speed_max):
+                speed_max = r["speed_max"]
+    total = sum(by_class.values())
+
     lines = [f"### Reporte de turno — {start:%d/%m %H:%M} a {end:%d/%m %H:%M} (Lima)", ""]
     lines.append(
         f"**Por tipo:** ruido {by_kind['noise']} · tránsito {by_kind['traffic']}"
@@ -78,7 +103,7 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
 
     if not events:
         lines.append(
-            f"**Ruido:** 0 eventos registrados ({len(passages)} pasajes de vehículos)."
+            f"**Ruido:** 0 eventos registrados ({total} pasajes de vehículos)."
         )
     else:
         peak = max(events, key=lambda e: e["db_max"])
@@ -110,24 +135,21 @@ def build_report(db: Path, start: datetime, end: datetime) -> str:
                 f" · {e['kind']} · `{clip}`"
             )
 
-    if passages:
-        by_class = Counter(p["vehicle_class"] for p in passages)
+    if total:
         # traffic: nivel al pasar; both: el del ruido que el pasaje provocó.
         dbs = [p["db_max"] for p in passages if p["db_max"] is not None and math.isfinite(p["db_max"])]
-        extra = f", {min(dbs):.0f}–{max(dbs):.0f} dB(A)" if dbs else ""
+        extra = f", {min(dbs):.0f}–{max(dbs):.0f} dB(A) en los grabados" if dbs else ""
         lines.append("")
         lines.append(
-            f"**Vehículos:** {len(passages)} pasajes — "
+            f"**Vehículos:** {total} pasajes — "
             + " · ".join(f"{k} {v}" for k, v in by_class.most_common())
             + extra
         )
-        speeds = [p["speed_kmh"] for p in passages if p["speed_kmh"]]
-        if speeds:
+        if speed_n:
             lines.append(
-                f"**Velocidad:** media {sum(speeds)/len(speeds):.0f} km/h · "
-                f"máx {max(speeds):.0f} km/h ({len(speeds)} medidos)"
+                f"**Velocidad:** media {speed_sum / speed_n:.0f} km/h · "
+                f"máx {speed_max:.0f} km/h ({speed_n} medidos)"
             )
-        dirs = Counter(p["direction"] for p in passages if p["direction"])
         if dirs:
             label = {"ltr": "izq→der", "rtl": "der→izq"}
             lines.append(

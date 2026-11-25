@@ -61,6 +61,20 @@ CREATE TABLE IF NOT EXISTS audio_levels (
 
 CREATE INDEX IF NOT EXISTS idx_al_minute ON audio_levels(minute);
 
+-- Pasajes del tracker por minuto, clase y sentido. Se cuentan todos, se
+-- graben o no como evento: los flags de `triggers` deciden qué filas y clips
+-- se guardan en `events`, no qué se mide. `direction` = '' si no se supo.
+CREATE TABLE IF NOT EXISTS traffic_counts (
+    minute TEXT NOT NULL,             -- ISO 8601 local, 'YYYY-MM-DDTHH:MM' (entrada)
+    vehicle_class TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT '',
+    count INTEGER NOT NULL DEFAULT 0,
+    speed_n INTEGER NOT NULL DEFAULT 0,
+    speed_sum REAL NOT NULL DEFAULT 0,
+    speed_max REAL,
+    PRIMARY KEY (minute, vehicle_class, direction)
+);
+
 CREATE TABLE IF NOT EXISTS acoustic_trigger_decisions (
     event_table TEXT NOT NULL,
     event_id INTEGER NOT NULL,

@@ -668,7 +668,10 @@ class PassageGatingTest(unittest.TestCase):
             AudioMonitor.classify_event_clip, em.audio_monitor)
         em._process_trigger({"type": "peak", "db": 90.0, "timestamp": self.base + 10.0})
         (row,) = self.rows()
-        self.assertEqual(row["kind"], "noise")
+        # Hay un auto detectado en la ventana y ningún pasaje cerrado: nace
+        # `both` en escena (S6), sin pasaje adjunto.
+        self.assertEqual(row["kind"], "both")
+        self.assertIsNone(row["track_id"])
         return row
 
     def test_dba_noise_scans_the_whole_clip_for_voice(self):

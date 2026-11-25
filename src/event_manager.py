@@ -30,6 +30,7 @@ from scipy.io import wavfile
 
 from .trigger_policy import TriggerPolicy
 from .utils import SPEECH_CLASSES, init_database, load_config, resolve_path
+from .vehicle_tracker import VEHICLE_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,12 @@ class EventManager:
         self._recent_passages: list[dict] = []
         self._passages_lock = threading.Lock()
         self._PASSAGE_TTL = 30.0  # seconds
+        # Ruidos `both` por un vehículo en escena sin pasaje cerrado (S6).
+        # Mientras dure el TTL, el pasaje de ese vehículo se adjunta a su fila
+        # en vez de insertar un `traffic` aparte. Protegido por _passages_lock.
+        self._in_scene: list[dict] = []
+        self.passages_counted = 0
+        self.count_errors = 0
 
     # ------------------------------------------------------------------
     # Clip saving (unchanged logic)
@@ -411,7 +418,137 @@ class EventManager:
             ]
             self._recent_passages.append(passage)
 
+    def _count_passage(self, passage: dict) -> None:
+        """Suma el pasaje a `traffic_counts`, se grabe o no como evento.
+
+        Los flags de `triggers` deciden qué se guarda en `events`; la medición
+        de tráfico (gráfico, contadores, stats) no depende de ellos.
+        """
+        speed = passage.get("speed_kmh")
+        speed = float(speed) if isinstance(speed, (int, float)) and not isinstance(speed, bool) else None
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO traffic_counts
+                    (minute, vehicle_class, direction, count, speed_n, speed_sum, speed_max)
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT (minute, vehicle_class, direction) DO UPDATE SET
+                    count = count + 1,
+                    speed_n = speed_n + excluded.speed_n,
+                    speed_sum = speed_sum + excluded.speed_sum,
+                    speed_max = CASE
+                        WHEN excluded.speed_max IS NULL THEN speed_max
+                        WHEN speed_max IS NULL OR excluded.speed_max > speed_max THEN excluded.speed_max
+                        ELSE speed_max END
+                """,
+                (
+                    _iso(passage["timestamp_enter"])[:16], passage["vehicle_class"],
+                    passage.get("direction") or "",
+                    1 if speed is not None else 0, speed or 0.0, speed,
+                ),
+            )
+            conn.commit()
+            self.passages_counted += 1
+        except sqlite3.Error:
+            # Un fallo del conteo no puede costar el evento del pasaje.
+            self.count_errors += 1
+            logger.exception("No se pudo contar el pasaje %s", passage.get("track_id"))
+        finally:
+            conn.close()
+
     def _process_passage(self, passage: dict):
+        """Cuenta el pasaje y lo guarda: adjunto a un `both` en escena o como `traffic`."""
+        self._count_passage(passage)
+        if self._attach_to_in_scene(passage):
+            return
+        self._record_passage(passage)
+
+    # ------------------------------------------------------------------
+    # Vehículo en escena (S6): ruido sin pasaje cerrado, vehículo detectado
+    # ------------------------------------------------------------------
+    def _open_in_scene(self, vehicle_class: str, start: float, end: float) -> dict | None:
+        """Registra un `both` en escena, o None si el vehículo ya tiene atribución.
+
+        Si un pasaje reciente de esa clase (reclamado o fijado) u otro ruido
+        en escena se solapa con la ventana, el vehículo detectado es muy
+        probablemente ese: un vehículo no se atribuye a dos eventos.
+        """
+        entry = {"vehicle_class": vehicle_class, "start": start, "end": end,
+                 "event_id": None, "passage": None}
+        with self._passages_lock:
+            now = time.time()
+            self._in_scene = [
+                e for e in self._in_scene
+                if e["event_id"] is None or now - e["end"] < self._PASSAGE_TTL
+            ]
+            overlapping = [
+                item for item in (
+                    *((p["timestamp_enter"], p["timestamp_exit"], p["vehicle_class"])
+                      for p in self._recent_passages),
+                    *((e["start"], e["end"], e["vehicle_class"]) for e in self._in_scene),
+                )
+                if item[2] == vehicle_class and item[0] <= end and item[1] >= start
+            ]
+            if overlapping:
+                return None
+            self._in_scene.append(entry)
+        return entry
+
+    def _attach_to_in_scene(self, passage: dict) -> bool:
+        """Adjunta el pasaje al único `both` en escena compatible, si lo hay.
+
+        Compatible = misma clase, ventanas que se solapan y sin pasaje. Con
+        dos candidatos no se elige: el pasaje sigue el camino normal.
+        """
+        with self._passages_lock:
+            now = time.time()
+            candidates = [
+                e for e in self._in_scene
+                if e["passage"] is None
+                and e["vehicle_class"] == passage["vehicle_class"]
+                and passage["timestamp_enter"] <= e["end"]
+                and passage["timestamp_exit"] >= e["start"]
+                and (e["event_id"] is None or now - e["end"] < self._PASSAGE_TTL)
+            ]
+            if len(candidates) != 1:
+                return False
+            entry = candidates[0]
+            entry["passage"] = passage
+            event_id = entry["event_id"]
+        # Si el ruido todavía no insertó su fila, la escribe él con el pasaje.
+        if event_id is not None and not self._write_in_scene_passage(event_id, passage):
+            return False
+        logger.info("Pasaje %s adjunto al evento en escena", passage.get("track_id"))
+        return True
+
+    def _write_in_scene_passage(self, event_id: int, passage: dict) -> bool:
+        """Escribe el pasaje en la fila `both` en escena; False si no pudo."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            updated = conn.execute(
+                """
+                UPDATE events SET track_id = ?, direction = ?, speed_kmh = ?,
+                    detection_score = ?, lane = COALESCE(?, lane)
+                WHERE id = ? AND kind = 'both' AND track_id IS NULL
+                    AND COALESCE(pinned, 0) = 0
+                """,
+                (
+                    passage.get("track_id"), passage.get("direction"), passage.get("speed_kmh"),
+                    passage.get("detection_score"), passage.get("lane"), event_id,
+                ),
+            ).rowcount
+            conn.commit()
+        except sqlite3.Error:
+            logger.exception("No se pudo adjuntar el pasaje al evento #%d", event_id)
+            return False
+        finally:
+            conn.close()
+        if not updated:
+            logger.info("Evento #%d fijado o ya con pasaje: el pasaje va aparte", event_id)
+        return bool(updated)
+
+    def _record_passage(self, passage: dict):
         """Inserta un pasaje completo como evento `traffic` con su propio clip."""
         if not self.trigger_policy.records_passage(passage["vehicle_class"], passage["timestamp_enter"]):
             # Ni fila ni clip, pero el tracker sigue sirviendo a la correlación.
@@ -738,6 +875,36 @@ class EventManager:
     # Trigger processing (from AudioMonitor.event_queue)
     # ------------------------------------------------------------------
     def _process_trigger(self, trigger: dict):
+        scene: dict = {}
+        try:
+            self._process_trigger_impl(trigger, scene)
+        finally:
+            self._close_in_scene(scene.get("entry"), scene.get("event_id"))
+
+    def _close_in_scene(self, entry: dict | None, event_id: int | None) -> None:
+        """Cierra el registro en escena de un disparo, con o sin fila `both`.
+
+        Con fila, queda abierto durante el TTL para el pasaje que cierre
+        después; si un pasaje ya se adjuntó, se escribe acá. Sin fila (el
+        disparo se descartó o falló), se quita y un pasaje ya adjunto sigue
+        el camino normal: nunca se pierde.
+        """
+        if entry is None:
+            return
+        with self._passages_lock:
+            if event_id is not None:
+                entry["event_id"] = event_id
+            elif entry in self._in_scene:
+                self._in_scene.remove(entry)
+            passage = entry["passage"]
+        if passage is None:
+            return
+        if event_id is not None and self._write_in_scene_passage(event_id, passage):
+            logger.info("Pasaje %s adjunto al evento en escena #%d", passage.get("track_id"), event_id)
+            return
+        self._record_passage(passage)
+
+    def _process_trigger_impl(self, trigger: dict, scene: dict):
         trigger_type = trigger["type"]
         perceptual = trigger_type == "psychoacoustic"
         db_max = trigger["db"]
@@ -796,6 +963,8 @@ class EventManager:
         # último frame: un frame suelto puede no contener los vehículos que
         # sí pasaron durante el evento (el caso "dice person con 3 autos").
         window_dets = self.video_monitor.detections_between(t_start, t_end)
+        # S6 sólo con detecciones dentro de la ventana, no con el fallback.
+        dets_in_window = bool(window_dets)
         if not window_dets and not perceptual:
             window_dets = self.video_monitor.recent_detections
         vehicle_dets = [d for d in window_dets if d.get("class") in NOISE_PRIORITY]
@@ -853,7 +1022,18 @@ class EventManager:
             if perceptual and passage is None:
                 culprit, lane = None, "none"
 
-        if passage is None and self.trigger_policy.noise_only_with_traffic:
+        # S6: sin pasaje cerrado, pero con el vehículo detectado en la ventana
+        # (p. ej. un bus que todavía cruza): el evento nace `both` con el clip
+        # del ruido. Sólo dBA: el psicoacústico descarta el culpable sin pasaje.
+        in_scene = None
+        if (
+            passage is None and not perceptual and dets_in_window
+            and culprit in VEHICLE_CLASSES
+        ):
+            in_scene = self._open_in_scene(culprit, t_start, t_end)
+            scene["entry"] = in_scene
+
+        if passage is None and in_scene is None and self.trigger_policy.noise_only_with_traffic:
             self.discarded_without_traffic += 1
             logger.info("Ruido %.1f dB sin pasaje correlacionado: descartado", db_max)
             return
@@ -931,6 +1111,10 @@ class EventManager:
             )
         if event_id is None and not clip_path:
             clip_path, duration_ms = None, None
+        if in_scene is not None:
+            # Conserva el clip del ruido; el pasaje, si cierra, se adjunta
+            # después (track_id, sentido, velocidad) sin regenerar unión.
+            kind = "both"
 
         conn = sqlite3.connect(self.db_path)
         try:
@@ -954,10 +1138,11 @@ class EventManager:
                     # y se reintenta como `noise` con el clip ya guardado (la
                     # unión contiene la ventana del ruido).
                     logger.exception(
-                        "No se pudo insertar el both del pasaje %s; se reintenta como noise",
-                        passage.get("track_id"),
+                        "No se pudo insertar el both %s; se reintenta como noise",
+                        f"del pasaje {passage.get('track_id')}" if passage is not None else "en escena",
                     )
-                    passage["claimed"] = False
+                    if passage is not None:
+                        passage["claimed"] = False
                     kind = "noise"
                     for key in ("direction", "speed_kmh", "detection_score", "track_id"):
                         row.pop(key, None)
@@ -977,6 +1162,8 @@ class EventManager:
                         self._delete_replaced_clip(clip_path, "")
                         return
                 event_id = cur.lastrowid
+                if in_scene is not None and kind == "both":
+                    scene["event_id"] = event_id
             if perceptual and trigger.get("trigger_decision"):
                 conn.execute(
                     "INSERT INTO acoustic_trigger_decisions (event_table, event_id, decision_json) VALUES (?, ?, ?)",

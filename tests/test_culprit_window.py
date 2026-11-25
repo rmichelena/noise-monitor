@@ -73,7 +73,9 @@ class CulpritWindowTest(unittest.TestCase):
         self.em._process_trigger(self.trigger)
         conn = sqlite3.connect(self.db)
         row = conn.execute(
-            "SELECT vehicle_class, confidence, clip_path FROM events WHERE kind = 'noise'"
+            # Sin pasaje cerrado y con vehículos detectados en la ventana, el
+            # ruido nace `both` (S6); el culpable sale igual de la ventana.
+            "SELECT vehicle_class, confidence, clip_path FROM events WHERE kind = 'both'"
         ).fetchone()
         conn.close()
         self.assertIsNotNone(row, "no se insertó el evento")

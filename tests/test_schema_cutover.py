@@ -25,7 +25,7 @@ from migrate_unified import EVENTS_DDL_STATEMENTS, migrate  # noqa: E402
 from support import create_legacy_schema, example_config  # noqa: E402
 from src.utils import UnmigratedDatabaseError, init_database, resolve_path  # noqa: E402
 
-AUX_TABLES = {"audio_levels", "acoustic_trigger_decisions"}
+AUX_TABLES = {"audio_levels", "acoustic_trigger_decisions", "traffic_counts"}
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:

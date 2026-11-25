@@ -41,6 +41,13 @@ Implementado en `src/`:
   `traffic` (pasaje sin disparo), `noise` (disparo sin pasaje) y `both`
   (disparo correlacionado con un pasaje, con un clip que cubre los dos).
   Clips MP4 ±5 s por evento (buffer circular + `ffmpeg`).
+- Medición de tráfico en `traffic_counts`: cada pasaje que cierra el tracker
+  se cuenta por minuto, clase y sentido (con velocidad), se grabe o no como
+  evento. El gráfico de vehículos, los contadores de pasajes, las stats de
+  velocidad y el reporte nocturno leen de ahí; los flags de `triggers` sólo
+  deciden qué filas y clips se guardan en `events`. Al crear la tabla (primer
+  arranque de esta versión) se rellena una sola vez con los pasajes que ya
+  estaban en `events`: el historial anterior es el que se había grabado.
 
 Implementado además:
 
@@ -203,6 +210,18 @@ correlación: el ruido lo puede reclamar y el evento se guarda como `both`.
 Por eso `noise_only_with_traffic` correlaciona con cualquier pasaje rastreado,
 aunque el tráfico esté fuera de su horario.
 
+**Vehículo en escena** (sólo criterio dBA): si un ruido no encuentra pasaje
+cerrado pero el detector vio un vehículo dentro de la ventana del clip (p. ej.
+un bus que todavía está cruzando), el evento nace `both` con la clase y el
+carril de la detección, sin `track_id`, y con el clip del ruido. Cuenta como
+tráfico asociado para `noise_only_with_traffic`. Si en los 30 s siguientes
+cierra un pasaje de esa clase que se solapa con la ventana, se le adjunta
+(`track_id`, sentido, velocidad) en vez de guardarse como `traffic` aparte; si
+la fila ya está fijada, no se toca y el pasaje sigue su camino. Un vehículo no
+se atribuye a dos ruidos: si ya hay un pasaje o un ruido en escena de esa
+clase solapado, el ruido nuevo queda `noise`. El criterio psicoacústico no lo
+usa: sin pasaje, descarta el culpable por diseño.
+
 Horarios (`{enabled, start, end, days}`), en hora local del nodo:
 
 - `enabled: false` (o la clave ausente): la sección está siempre activa.
@@ -355,8 +374,8 @@ sudo systemctl enable --now noise-report.timer # reporte diario 07:00 a Buzz
   vista en vivo MJPEG (`/stream`) con las detecciones dibujadas, que solo se
   codifica mientras la transmisión está activada.
 - Retención: `scripts/purge.py` borra clips de más de 30 días (la fila del
-  evento y la del pasaje se conservan sin clip) y `audio_levels` de más de 400
-  días. Los clips **fijados** (`pinned`) no se borran nunca.
+  evento y la del pasaje se conservan sin clip) y `audio_levels` y
+  `traffic_counts` de más de 400 días (`retention.levels_days`). Los clips **fijados** (`pinned`) no se borran nunca.
   `noise-purge.timer` lo ejecuta los domingos a las 04:00. Configurable en
   `config.yaml` → `retention`.
 - Acceso externo: `noise-tunnel.service` levanta un *quick tunnel* de

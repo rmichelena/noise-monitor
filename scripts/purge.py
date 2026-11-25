@@ -7,7 +7,8 @@ Purga de datos antiguos del Noise Monitor.
 - Los clips fijados no se borran nunca. Se respetan también los fijados de
   `noise_events_legacy`/`vehicle_passages_legacy`: tras la migración, un evento
   `both` apunta a un solo clip y el otro archivo sólo lo nombra la tabla legacy.
-- Filas de `audio_levels` con más de `retention.levels_days` días: se borran.
+- Filas de `audio_levels` y `traffic_counts` con más de `retention.levels_days`
+  días: se borran (las dos son agregados por minuto).
 - Filas con `clip_path` que apunta a un archivo inexistente: se limpian.
 
 Uso:
@@ -169,8 +170,16 @@ def main() -> int:
                 conn.execute("DELETE FROM audio_levels WHERE minute < ?", (levels_cutoff,))
         else:
             old_levels = 0
+        if _table_exists(conn, "traffic_counts"):
+            old_counts = conn.execute(
+                "SELECT COUNT(*) FROM traffic_counts WHERE minute < ?", (levels_cutoff,)
+            ).fetchone()[0]
+            if not args.dry_run:
+                conn.execute("DELETE FROM traffic_counts WHERE minute < ?", (levels_cutoff,))
+        else:
+            old_counts = 0
         conn.commit()
-        if not args.dry_run and (deleted_files or cleared or old_levels):
+        if not args.dry_run and (deleted_files or cleared or old_levels or old_counts):
             try:
                 conn.execute("VACUUM")
             except sqlite3.OperationalError as exc:
@@ -183,7 +192,7 @@ def main() -> int:
     print(
         f"[{mode}] clips>={clip_days}d borrados={deleted_files} "
         f"({freed / 1024 / 1024:.1f} MB), filas sin clip: {by_kind}, "
-        f"niveles>={levels_days}d borrados={old_levels}"
+        f"niveles>={levels_days}d borrados={old_levels}, conteos de tráfico borrados={old_counts}"
     )
     return 0
 

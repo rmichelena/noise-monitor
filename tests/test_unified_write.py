@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -363,7 +364,156 @@ class UnifiedWriteTest(unittest.TestCase):
     def test_clase_distinta_no_correlaciona(self):
         self._passage(3.0, 9.0, cls="truck")
         self._trigger(10.0)
-        self.assertEqual([r["kind"] for r in self._rows()], ["traffic", "noise"])
+        truck, event = self._rows()
+        self.assertEqual(truck["kind"], "traffic")
+        self.assertEqual(truck["sound_class"], None, "el camión no se reclama")
+        # El auto detectado en la ventana, sin pasaje: `both` en escena (S6).
+        self.assertEqual(event["kind"], "both")
+        self.assertEqual(event["vehicle_class"], "car")
+        self.assertIsNone(event["track_id"])
+
+    # -- S6: vehículo en escena sin pasaje cerrado --------------------------
+    def _pin(self, event_id):
+        conn = sqlite3.connect(self.db)
+        conn.execute("UPDATE events SET pinned = 1, pinned_at = 'x' WHERE id = ?", (event_id,))
+        conn.commit()
+        conn.close()
+
+    def test_en_escena_nace_both_y_el_pasaje_se_adjunta_despues(self):
+        # Orden 1: el ruido inserta su fila y el pasaje cierra después.
+        self._trigger(10.0)
+        (event,) = self._rows()
+        self.assertEqual(event["kind"], "both")
+        self.assertEqual(event["vehicle_class"], "car")
+        self.assertIsNone(event["track_id"])
+        clip = event["clip_path"]
+        self._passage(9.0, 14.0, track_id=21)
+        (row,) = self._rows()
+        self.assertEqual(row["id"], event["id"], "sin traffic aparte")
+        self.assertEqual(row["track_id"], 21)
+        self.assertEqual(row["direction"], "ltr")
+        self.assertEqual(row["speed_kmh"], 30.0)
+        self.assertEqual(row["detection_score"], 0.6)
+        self.assertEqual(row["clip_path"], clip, "conserva el clip del ruido")
+        self.assertEqual(row["start_ts"], event["start_ts"])
+        self.assertEqual(len(self.clip_calls), 1, "sin unión")
+        self.assertFalse((self.em.clips_dir / "passage_21.mp4").exists(), "sin clip de pasaje")
+
+    def test_pasaje_que_cierra_mientras_se_guarda_el_ruido(self):
+        # Orden 2: el pasaje cierra entre el registro en escena y el INSERT.
+        save = self.em._save_clip
+
+        def save_then_close(*args, **kwargs):
+            result = save(*args, **kwargs)
+            self._passage(9.0, 14.0, track_id=22)
+            self.assertEqual(self._rows(), [], "el pasaje no inserta traffic")
+            return result
+
+        self.em._save_clip = save_then_close
+        self._trigger(10.0)
+        (row,) = self._rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["track_id"], 22)
+        self.assertEqual(row["speed_kmh"], 30.0)
+        self.assertEqual(len(self.clip_calls), 1)
+
+    def test_en_escena_fijado_no_se_toca_y_el_pasaje_va_aparte(self):
+        self._trigger(10.0)
+        (event,) = self._rows()
+        self._pin(event["id"])
+        (event,) = self._rows()
+        self._passage(9.0, 14.0, track_id=23)
+        pinned, traffic = self._rows()
+        self.assertEqual(pinned, event)
+        self.assertEqual(traffic["kind"], "traffic")
+        self.assertEqual(traffic["track_id"], 23)
+
+    def test_un_pasaje_por_evento_en_escena(self):
+        self._trigger(10.0)
+        self._passage(9.0, 14.0, track_id=24)
+        self._passage(9.5, 14.5, track_id=25)
+        both, traffic = self._rows()
+        self.assertEqual(both["track_id"], 24)
+        self.assertEqual((traffic["kind"], traffic["track_id"]), ("traffic", 25))
+
+    def test_dos_pasajes_que_cierran_antes_del_insert(self):
+        # Orden 2 con dos pasajes: el registro en memoria acepta uno solo; si
+        # el segundo pisara al primero, ése se perdería sin fila.
+        save = self.em._save_clip
+
+        def save_then_close(*args, **kwargs):
+            result = save(*args, **kwargs)
+            self._passage(9.0, 14.0, track_id=28)
+            self._passage(9.5, 14.5, track_id=29)
+            return result
+
+        self.em._save_clip = save_then_close
+        self._trigger(10.0)
+        traffic, both = self._rows()
+        self.assertEqual((traffic["kind"], traffic["track_id"]), ("traffic", 29))
+        self.assertEqual((both["kind"], both["track_id"]), ("both", 28))
+
+    def test_pasaje_que_no_se_solapa_no_se_adjunta(self):
+        self._trigger(10.0)
+        self._passage(13.0, 15.0, track_id=26)  # entra después de la ventana [8, 12]
+        both, traffic = self._rows()
+        self.assertIsNone(both["track_id"])
+        self.assertEqual(traffic["track_id"], 26)
+
+    def test_un_vehiculo_no_se_atribuye_a_dos_ruidos(self):
+        self._trigger(10.0)
+        self._trigger(10.5)
+        first, second = self._rows()
+        self.assertEqual(first["kind"], "both")
+        self.assertEqual(second["kind"], "noise", "el auto ya está en el primer ruido")
+        self.assertEqual(second["vehicle_class"], "car")
+
+    def test_pasaje_reclamado_bloquea_el_en_escena(self):
+        self._passage(3.0, 9.0)
+        self._trigger(10.0)
+        self._trigger(11.0)
+        self.assertEqual([r["kind"] for r in self._rows()], ["both", "noise"])
+
+    def test_sin_detecciones_en_la_ventana_no_hay_en_escena(self):
+        # El fallback `recent_detections` sigue sirviendo al culpable, pero
+        # no prueba que el vehículo estuviera durante el ruido.
+        self.em.video_monitor.detections_between.return_value = []
+        self._trigger(10.0)
+        (row,) = self._rows()
+        self.assertEqual(row["kind"], "noise")
+        self.assertEqual(row["vehicle_class"], "car")
+
+    def test_noise_only_with_traffic_acepta_vehiculo_en_escena(self):
+        self.em.trigger_policy = replace(self.em.trigger_policy, noise_only_with_traffic=True)
+        self._trigger(10.0)
+        (row,) = self._rows()
+        self.assertEqual(row["kind"], "both")
+        self.em.video_monitor.detections_between.return_value = []
+        self._trigger(20.0)
+        self.assertEqual(len(self._rows()), 1, "sin vehículo en la ventana se descarta")
+        self.assertEqual(self.em.discarded_without_traffic, 1)
+
+    def test_ruido_perdido_no_se_lleva_el_pasaje_adjunto(self):
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "CREATE TRIGGER no_ruido BEFORE INSERT ON events WHEN NEW.kind != 'traffic' "
+            "BEGIN SELECT RAISE(ABORT, 'sin ruido'); END"
+        )
+        conn.commit()
+        conn.close()
+        save = self.em._save_clip
+
+        def save_then_close(*args, **kwargs):
+            result = save(*args, **kwargs)
+            self._passage(9.0, 14.0, track_id=27)
+            return result
+
+        self.em._save_clip = save_then_close
+        with self.assertLogs("src.event_manager", level="ERROR"):
+            self._trigger(10.0)
+        (row,) = self._rows()
+        self.assertEqual((row["kind"], row["track_id"]), ("traffic", 27))
+        self.assertEqual(self.em._in_scene, [])
 
     def test_run_exige_la_tabla_events(self):
         conn = sqlite3.connect(self.db)
