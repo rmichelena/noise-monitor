@@ -153,6 +153,13 @@ def get_lane(detections: list[dict]) -> str:
     return "left" if left else "right"
 
 
+# Columnas que el reclamo de `_upgrade_to_both` sobrescribe.
+_CLAIM_COLUMNS = (
+    "kind", "timestamp", "peak_ts", "db_max", "db_avg", "trigger_type", "sound_class",
+    "sound_category", "sound_confidence", "sound_labels_json", "confidence",
+)
+
+
 class EventManager:
     """
     Consume dos colas en threads separados:
@@ -606,12 +613,20 @@ class EventManager:
     ) -> int | None:
         """Convierte el `traffic` del pasaje en `both` con un único clip unión.
 
-        Devuelve el id del evento, o None si el pasaje ya no era `traffic` o
-        está fijado: en los dos casos el llamador guarda el ruido como `noise`.
+        Devuelve el id del evento, o None si el pasaje ya no era `traffic`, está
+        fijado o se fijó durante el clip unión: el llamador guarda el ruido como
+        `noise` con su propio clip.
         """
         event_id = passage["db_id"]
         conn = sqlite3.connect(self.db_path)
         try:
+            # Lo que el reclamo pisa: si la fila se fija durante el clip unión,
+            # se restaura tal cual (ver más abajo). Lectura y reclamo en la
+            # misma transacción de escritura, para restaurar lo que se pisó.
+            conn.execute("BEGIN IMMEDIATE")
+            original = conn.execute(
+                f"SELECT {', '.join(_CLAIM_COLUMNS)} FROM events WHERE id = ?", (event_id,)
+            ).fetchone()
             # Reclamo atómico: sólo un trigger puede pasar este pasaje a both.
             claimed = conn.execute(
                 """
@@ -638,8 +653,9 @@ class EventManager:
                 if state is not None and state[0] == "traffic" and state[1]:
                     # El dueño fijó el pasaje: su fila no se toca. El ruido se
                     # guarda como `noise` con su propio clip y su atribución.
+                    # `claimed` sigue en True: fijado = consumido, así ningún
+                    # otro disparo vuelve a elegirlo mientras dure el TTL.
                     logger.info("Pasaje #%d fijado: el ruido se guarda aparte", event_id)
-                    passage["claimed"] = False
                     return None
                 logger.warning("El pasaje #%d ya no es traffic; el ruido queda aparte", event_id)
                 return None
@@ -681,12 +697,23 @@ class EventManager:
             ).rowcount
             conn.commit()
             if not updated:
+                # Se fijó mientras se generaba la unión. Una fila `both` con los
+                # datos del ruido sobre la ventana del pasaje sería incoherente
+                # (timestamp > end_ts): se deshace el reclamo y el ruido va
+                # aparte como `noise`, igual que con un pasaje ya fijado.
+                # `claimed` queda en True: fijado = consumido.
+                if original is not None:
+                    conn.execute(
+                        f"UPDATE events SET {', '.join(f'{c} = ?' for c in _CLAIM_COLUMNS)} WHERE id = ?",
+                        (*original, event_id),
+                    )
+                    conn.commit()
                 logger.warning(
-                    "Evento #%d fijado durante el clip unión: conserva %s y se descarta la unión",
-                    event_id, old_clip or "none",
+                    "Pasaje #%d fijado durante el clip unión: vuelve a traffic, se descarta la "
+                    "unión y el ruido se guarda aparte", event_id,
                 )
                 self._delete_replaced_clip(clip_path, old_clip or "")
-                return event_id
+                return None
         except sqlite3.Error:
             # El reclamo ya está commiteado: propagar la excepción haría que
             # el llamador inserte un `noise` duplicado. La fila sigue

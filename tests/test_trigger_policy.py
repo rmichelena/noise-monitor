@@ -161,13 +161,21 @@ class PolicyConfigTest(unittest.TestCase):
         self.cfg["tracker"]["record_classes"] = "car"
         self.assert_config_error("tracker.record_classes")
 
-    def test_empty_record_classes_needs_traffic_off(self):
+    def test_empty_record_classes_with_traffic_starts_but_logs_error(self):
         # Issue #21 r2, M-A: tráfico encendido sin clases no grababa ningún
-        # pasaje y no lo avisaba. Con el tráfico apagado, `[]` es válido.
+        # pasaje y no lo avisaba. r3, M3: al arrancar no aborta (una config
+        # vieja no puede dejar caído el servicio y su página de ajustes),
+        # pero lo registra como error. El guardado sí lo rechaza (test_settings).
         self.cfg["tracker"]["record_classes"] = []
-        self.assert_config_error("record_classes vacío")
+        with self.assertLogs(level="ERROR") as logs:
+            validate_config(self.cfg)
+        self.assertTrue(any("record_classes vacío" in line for line in logs.output))
+        policy = TriggerPolicy.from_config(self.cfg)
+        self.assertTrue(policy.traffic_enabled)
+        self.assertFalse(policy.records_passage("car", time.time()))
         self.cfg["triggers"]["traffic_enabled"] = False
-        validate_config(self.cfg)
+        with self.assertNoLogs(level="ERROR"):
+            validate_config(self.cfg)
 
     def test_noise_only_with_traffic_needs_traffic(self):
         self.cfg["triggers"].update(noise_only_with_traffic=True, traffic_enabled=False)

@@ -280,12 +280,35 @@ class UnifiedWriteTest(unittest.TestCase):
         self.assertNotEqual(noise["clip_path"], traffic["clip_path"])
         self.assertAlmostEqual(noise["start_ts"], self.base + 10.0 - PRE)
         self.assertEqual(len(self.clip_calls), 1, "un solo clip: el del ruido, no una unión")
-        self.assertFalse(passage.get("claimed"), "el pasaje queda libre")
+        # r3, M1: fijado = consumido. Liberado, el pasaje volvía a elegirse
+        # durante el TTL y cada disparo se le atribuía de nuevo.
+        self.assertTrue(passage.get("claimed"), "el pasaje fijado queda consumido")
+
+    def test_pasaje_fijado_no_se_atribuye_a_un_segundo_disparo(self):
+        passage = self._passage(3.0, 9.0)
+        (traffic,) = self._rows()
+        conn = sqlite3.connect(self.db)
+        conn.execute("UPDATE events SET pinned = 1, pinned_at = 'x' WHERE id = ?", (traffic["id"],))
+        conn.commit()
+        conn.close()
+        (traffic,) = self._rows()
+        with self.assertLogs("src.event_manager", level="INFO") as logs:
+            self._trigger(10.0)
+            self._trigger(10.5)
+        attributed = [line for line in logs.output if "fijado: el ruido se guarda aparte" in line]
+        self.assertEqual(len(attributed), 1, "sólo el primer disparo se correlaciona con el fijado")
+        self.assertIsNone(self.em._find_matching_passage(self.base + 10.5, "car"))
+        rows = self._rows()
+        self.assertEqual([r["kind"] for r in rows], ["traffic", "noise", "noise"])
+        self.assertEqual(rows[0], traffic, "la fila fijada no se toca")
+        self.assertTrue(passage.get("claimed"))
 
     def test_pin_durante_el_clip_union_no_pierde_la_evidencia(self):
         # Issue #21 r2, M-B: el clip unión tarda; si el dueño fija la fila
         # mientras tanto, el UPDATE final no la pisa y la unión se descarta.
-        self._passage(3.0, 9.0, track_id=5)
+        # r3, M2: el reclamo se deshace (la fila vuelve a ser el `traffic`
+        # original, columna por columna) y el ruido va aparte como `noise`.
+        passage = self._passage(3.0, 9.0, track_id=5)
         (traffic,) = self._rows()
         original = self.em._union_clip
 
@@ -300,13 +323,19 @@ class UnifiedWriteTest(unittest.TestCase):
         self.em._union_clip = union_then_pin
         with self.assertLogs("src.event_manager", level="WARNING"):
             self._trigger(10.0)
-        (row,) = self._rows()
-        self.assertEqual(row["pinned"], 1)
-        for key in ("clip_path", "start_ts", "end_ts", "duration_ms", "audio_muted"):
-            self.assertEqual(row[key], traffic[key], key)
+        row, noise = self._rows()
+        self.assertEqual(row, {**traffic, "pinned": 1}, "vuelve a ser el traffic original")
         self.assertTrue(Path(traffic["clip_path"]).exists(), "el clip fijado sigue en disco")
-        self.assertEqual(len(self.clip_calls), 1)
         self.assertFalse((self.em.clips_dir / "event_0.mp4").exists(), "la unión se borra")
+        self.assertEqual(noise["kind"], "noise")
+        self.assertEqual(noise["sound_class"], "Car")
+        self.assertEqual(noise["vehicle_class"], "car")
+        self.assertAlmostEqual(noise["peak_ts"], self.base + 10.0)
+        self.assertAlmostEqual(noise["start_ts"], self.base + 10.0 - PRE)
+        self.assertEqual(noise["clip_path"], str(self.em.clips_dir / "event_1.mp4"))
+        self.assertTrue(Path(noise["clip_path"]).exists())
+        self.assertEqual(len(self.clip_calls), 2, "la unión descartada y el clip del ruido")
+        self.assertTrue(passage.get("claimed"), "fijado = consumido")
 
     def test_update_fallido_del_clip_no_borra_la_evidencia(self):
         # Issue #21, M1: si el UPDATE del clip unión falla, la fila sigue

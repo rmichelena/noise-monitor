@@ -32,6 +32,7 @@ from ruamel.yaml.util import load_yaml_guess_indent
 
 from src.perceptual_trigger import Settings
 from src.schedule import DEFAULT_END, DEFAULT_START, _parse_hhmm
+from src.trigger_policy import TriggerPolicy
 from src.utils import ConfigError, load_config, validate_config
 from src.vehicle_tracker import VEHICLE_CLASSES
 
@@ -505,6 +506,14 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
     # validate_config incluye TriggerPolicy.from_config: horarios, días, clases
     # y coherencia de flags se validan sobre la config completa resultante.
     validate_startable(config, base_dir)
+    # Al arrancar es sólo un aviso (validate_config), para que una config
+    # vieja no tumbe el servicio; desde la página no se puede dejar así.
+    policy = TriggerPolicy.from_config(config)
+    if policy.traffic_enabled and not policy.record_classes:
+        raise ValueError(
+            "tracker.record_classes vacío con triggers.traffic_enabled: no se grabaría "
+            "ningún pasaje (para no registrar tráfico, apagá triggers.traffic_enabled)"
+        )
     return config, changed
 
 

@@ -98,6 +98,31 @@ class LiveApiTest(WebTestCase):
         health = self.client.get("/api/health").json()
         self.assertEqual(health["audio_classifier"], status)
 
+    def test_health_exposes_the_effective_trigger_policy(self):
+        # r3, M3: una config degradada (tráfico sin clases) arranca; el
+        # health la deja a la vista.
+        self.cfg["tracker"]["record_classes"] = []
+        self.cfg["triggers"]["noise_schedule"] = {"enabled": True, "start": "00:00", "end": "23:59"}
+        self.cfg["triggers"]["noise_only_with_traffic"] = True
+        client = TestClient(create_app(self.cfg, PROJECT_DIR, audio_monitor=self.audio))
+        policy = client.get("/api/health").json()["policy"]
+        self.assertEqual(policy["record_classes"], [])
+        self.assertTrue(policy["traffic_enabled"])
+        self.assertTrue(policy["traffic_active_now"])
+        self.assertFalse(policy["traffic_schedule_enabled"])
+        self.assertTrue(policy["noise_schedule_enabled"])
+        self.assertTrue(policy["noise_only_with_traffic"])
+        self.assertFalse(policy["traffic_only_with_noise"])
+
+    def test_health_prefers_the_running_policy(self):
+        from src.trigger_policy import TriggerPolicy
+        self.audio.trigger_policy = TriggerPolicy(record_classes=frozenset({"bus"}), noise_enabled=False)
+        client = TestClient(create_app(self.cfg, PROJECT_DIR, audio_monitor=self.audio))
+        policy = client.get("/api/health").json()["policy"]
+        self.assertEqual(policy["record_classes"], ["bus"])
+        self.assertFalse(policy["noise_enabled"])
+        self.assertFalse(policy["noise_active_now"])
+
     def test_live_returns_parseable_json_with_silence(self):
         response = self.client.get("/api/live")
         self.assertEqual(response.status_code, 200)

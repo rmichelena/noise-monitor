@@ -47,6 +47,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
+from src.trigger_policy import TriggerPolicy
 from src.utils import ConfigError, load_config, resolve_path
 
 from .analysis import analysis_router
@@ -914,6 +915,15 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
 
     # Distingue el proceso nuevo del viejo: la página espera a que cambie.
     started_at = time.time()
+    # La política con la que corre el proceso (la de AudioMonitor; si no hay,
+    # la de la config cargada al arrancar). Se expone en /api/health para que
+    # una config degradada —p. ej. tráfico sin clases— no pase inadvertida.
+    trigger_policy = getattr(audio_monitor, "trigger_policy", None)
+    if not isinstance(trigger_policy, TriggerPolicy):
+        try:
+            trigger_policy = TriggerPolicy.from_config(config)
+        except ValueError:
+            trigger_policy = None
     restart_state = {"pending": False}
     restart_lock = threading.Lock()
 
@@ -989,6 +999,19 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         classifier_status = getattr(audio_monitor, "classifier_status", None)
         if classifier_status is not None:
             health["audio_classifier"] = classifier_status()
+        if trigger_policy is not None:
+            now = time.time()
+            health["policy"] = {
+                "noise_enabled": trigger_policy.noise_enabled,
+                "noise_schedule_enabled": trigger_policy.noise_schedule.enabled,
+                "noise_active_now": trigger_policy.noise_active(now),
+                "noise_only_with_traffic": trigger_policy.noise_only_with_traffic,
+                "traffic_enabled": trigger_policy.traffic_enabled,
+                "traffic_schedule_enabled": trigger_policy.traffic_schedule.enabled,
+                "traffic_active_now": trigger_policy.traffic_active(now),
+                "traffic_only_with_noise": trigger_policy.traffic_only_with_noise,
+                "record_classes": sorted(trigger_policy.record_classes),
+            }
         return health
 
     return app

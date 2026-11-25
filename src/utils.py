@@ -297,7 +297,12 @@ def validate_config(
     if not policy.noise_enabled and not policy.traffic_enabled:
         log.warning("triggers.noise_enabled y triggers.traffic_enabled en false: no se guardará ningún evento")
     elif policy.traffic_enabled and not policy.record_classes:
-        log.warning("tracker.record_classes vacío: no se guardará ningún pasaje como traffic")
+        # No aborta: una config vieja con `[]` no puede dejar el servicio (y
+        # la página de ajustes) caídos. /settings no permite guardarla así.
+        log.error(
+            "tracker.record_classes vacío con triggers.traffic_enabled: no se grabará "
+            "ningún pasaje como traffic (apagá triggers.traffic_enabled o elegí clases)"
+        )
 
     speed_cfg = config.get("speed")
     if speed_cfg is not None and not isinstance(speed_cfg, dict):
