@@ -157,6 +157,16 @@ class RestartTest(unittest.TestCase):
         self.assertEqual(self.restart().status_code, 202)
         self.assertEqual(len(FakeTimer.created), 2)
 
+    def test_sigterm_from_the_restart_itself_is_success(self):
+        # En producción systemctl muere con -15 cuando el reinicio que encoló
+        # baja el servicio: no es un error ni libera el pedido en curso.
+        self.restart_rc = -15
+        self.restart()
+        with self.assertNoLogs("web.app", level="ERROR"):
+            FakeTimer.created[0].fire()
+        self.assertEqual(self.restart().status_code, 202)
+        self.assertEqual(len(FakeTimer.created), 1, "sigue en curso: no agenda otro")
+
     def test_sudo_without_permission_is_500_before_answering(self):
         self.preflight_rc = 1
         with self.assertLogs("web.app", level="ERROR"):

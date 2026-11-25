@@ -255,7 +255,10 @@ class UnifiedWriteTest(unittest.TestCase):
         self.assertEqual(rows[0]["clip_path"], traffic["clip_path"])
         self.assertTrue(Path(traffic["clip_path"]).exists())
 
-    def test_pasaje_fijado_no_pierde_su_clip(self):
+    def test_pasaje_fijado_conserva_su_clip_y_su_ventana(self):
+        # Antes (hasta 6a9486b) la fila fijada pasaba a apuntar al clip unión
+        # y el archivo fijado quedaba huérfano: purge.py lo borraba con el
+        # tiempo. Ahora la evidencia fijada no se reemplaza (issue #21, H1).
         self._passage(3.0, 9.0)
         (traffic,) = self._rows()
         conn = sqlite3.connect(self.db)
@@ -266,8 +269,34 @@ class UnifiedWriteTest(unittest.TestCase):
         (row,) = self._rows()
         self.assertEqual(row["kind"], "both")
         self.assertEqual(row["pinned"], 1)
-        self.assertNotEqual(row["clip_path"], traffic["clip_path"])
+        self.assertEqual(row["sound_class"], "Car", "los metadatos del ruido sí se reclaman")
+        for key in ("clip_path", "start_ts", "end_ts", "duration_ms", "audio_muted"):
+            self.assertEqual(row[key], traffic[key], key)
         self.assertTrue(Path(traffic["clip_path"]).exists())
+        self.assertEqual(self.clip_calls, [], "no se genera un clip unión")
+
+    def test_update_fallido_del_clip_no_borra_la_evidencia(self):
+        # Issue #21, M1: si el UPDATE del clip unión falla, la fila sigue
+        # apuntando al clip del pasaje; ese archivo se conserva y el clip
+        # unión, que nadie referencia, se borra.
+        self._passage(3.0, 9.0, track_id=5)
+        (traffic,) = self._rows()
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "CREATE TRIGGER no_clip_update BEFORE UPDATE OF clip_path ON events "
+            "BEGIN SELECT RAISE(ABORT, 'clip bloqueado'); END"
+        )
+        conn.commit()
+        conn.close()
+        with self.assertLogs("src.event_manager", level="ERROR"):
+            self._trigger(10.0)
+        (row,) = self._rows()
+        self.assertEqual(row["kind"], "both")
+        self.assertEqual(row["clip_path"], traffic["clip_path"])
+        self.assertTrue(Path(traffic["clip_path"]).exists(), "el clip referenciado sigue en disco")
+        self.assertEqual(len(self.clip_calls), 1)
+        union = self.em.clips_dir / "event_0.mp4"
+        self.assertFalse(union.exists(), "el clip unión huérfano se borra")
 
     def test_clase_distinta_no_correlaciona(self):
         self._passage(3.0, 9.0, cls="truck")

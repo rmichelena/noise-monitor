@@ -148,10 +148,10 @@ FIELD_GROUPS: list[dict[str, Any]] = [
             {"path": "video.framerate", "label": "Framerate", "type": "integer", "min": 1, "max": 240, "unit": "fps"},
             {"path": "video.inference_interval", "label": "Cada N frames", "type": "integer", "min": 1},
             {"path": "video.detection_threshold", "label": "Confianza mínima", "type": "number", "step": 0.01, "min": 0, "max": 1},
-            {"path": "video.detection_min_width", "label": "Ancho mínimo de caja", "type": "integer", "min": 1, "unit": "px"},
-            {"path": "video.detection_max_width", "label": "Ancho máximo de caja", "type": "integer", "min": 1, "unit": "px"},
-            {"path": "video.detection_min_height", "label": "Alto mínimo de caja", "type": "integer", "min": 1, "unit": "px"},
-            {"path": "video.detection_max_height", "label": "Alto máximo de caja", "type": "integer", "min": 1, "unit": "px"},
+            {"path": "video.detection_min_width", "label": "Ancho mínimo de caja", "type": "integer", "min": 1, "unit": "px", "default": 24},
+            {"path": "video.detection_max_width", "label": "Ancho máximo de caja", "type": "integer", "min": 1, "unit": "px", "default": 600},
+            {"path": "video.detection_min_height", "label": "Alto mínimo de caja", "type": "integer", "min": 1, "unit": "px", "default": 14},
+            {"path": "video.detection_max_height", "label": "Alto máximo de caja", "type": "integer", "min": 1, "unit": "px", "default": 300},
             {"path": "video.overlay_db", "label": "Quemar fecha y dB en clips", "type": "boolean", "default": True},
         ],
     },
@@ -273,7 +273,7 @@ def _coerce_list_int(raw: list, path: str) -> list[int]:
     return out
 
 
-def _coerce(field: dict, raw: Any, path: str) -> Any:
+def _coerce(field: dict, raw: Any, path: str, current: Any = None) -> Any:
     kind = field["type"]
     if kind == "boolean":
         if not isinstance(raw, bool):
@@ -305,8 +305,13 @@ def _coerce(field: dict, raw: Any, path: str) -> Any:
         if unknown:
             raise ValueError(f"{path}: clases desconocidas {unknown}")
         chosen = set(raw)
+        kept = set(current) if isinstance(current, list) else set()
         for group in CLASS_GROUPS:
             members = set(group["classes"])
+            # Un grupo partido a mano en config.yaml (p. ej. sólo motorcycle)
+            # se puede conservar tal cual; lo que la página no arma es uno nuevo.
+            if chosen & members == kept & members:
+                continue
             if chosen & members and not members <= chosen:
                 raise ValueError(
                     f"{path}: «{group['label']}» va completo ({', '.join(group['classes'])})"
@@ -468,7 +473,7 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
     shown = {path: _default(config, path) for path in updates}
     for path, raw in updates.items():
         field = FIELD_MAP[path]
-        value = _coerce(field, raw, path)
+        value = _coerce(field, raw, path, _plain(_get_path(config, path)))
         current = _get_path(config, path)
         if current is None and _same(field, value, shown[path]):
             continue  # ausente y con su default: sigue ausente
@@ -520,7 +525,7 @@ def validate_startable(config: dict, base_dir: Path) -> None:
             ) from exc
 
 
-def save_config(path: Path, config: Any) -> Path:
+def save_config(path: Path, config: Any, changed: list[str] | None = None) -> Path:
     """Escribe config.yaml de forma atómica, dejando un .bak de la versión previa."""
     path = Path(path)
     backup = path.with_name(path.name + ".bak")
@@ -542,9 +547,25 @@ def save_config(path: Path, config: Any) -> Path:
             # (PyYAML), no el objeto de ruamel: los dos loaders no coinciden
             # en todo (p. ej. `19:00`), y lo que importa es que arranque.
             try:
-                validate_config(load_config(tmp), base_dir=path.parent)
-            except ConfigError as exc:
+                reloaded = load_config(tmp)
+                validate_config(reloaded, base_dir=path.parent)
+                # validate_config no mira la sección psicoacústica: un texto
+                # que PyYAML relee distinto (p. ej. `NO` → False en el id de
+                # calibración) pasaría y el servicio saldría con 78.
+                Settings.load(reloaded)
+            except (ConfigError, ValueError) as exc:
                 raise ConfigError(f"el archivo resultante no sería válido: {exc}") from exc
+            # Cada campo escrito tiene que releerse con el valor que se quiso
+            # escribir, aunque el resultado siga siendo válido (`NO`, `on`,
+            # `010` cambian de tipo o de valor en YAML 1.1). Sólo los de este
+            # guardado: un desacuerdo previo en otro campo no lo causa éste.
+            for field_path in (FIELD_MAP if changed is None else changed):
+                wanted, read = _plain(_get_path(config, field_path)), _get_path(reloaded, field_path)
+                if wanted != read:
+                    raise ConfigError(
+                        f"el archivo resultante no sería válido: {field_path} se releería "
+                        f"como {read!r} en vez de {wanted!r}"
+                    )
             os.chmod(tmp, mode)
             # El .bak se toma recién ahora: un guardado rechazado no lo pisa.
             if path.exists():
@@ -563,4 +584,4 @@ def update_config(path: Path, updates: dict[str, Any], base_dir: Path) -> tuple[
         config, changed = apply_updates(config, updates, base_dir)
         if not changed:
             return changed, None
-        return changed, save_config(path, config)
+        return changed, save_config(path, config, changed)

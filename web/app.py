@@ -33,6 +33,7 @@ import math
 import os
 import secrets
 import shutil
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -924,6 +925,13 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
         else:
             if result.returncode == 0:
                 logger.info("Reinicio de %s encolado desde /settings", RESTART_UNIT)
+                return
+            if result.returncode == -signal.SIGTERM:
+                # systemctl corre dentro del cgroup del servicio: el reinicio
+                # que encoló lo termina con SIGTERM al bajar el servicio. Que
+                # llegue esa señal prueba que el reinicio está en marcha.
+                logger.info("Reinicio de %s en marcha (systemctl terminado por el propio reinicio)",
+                            RESTART_UNIT)
                 return
             logger.error("Reinicio de %s falló (rc=%s): %s", RESTART_UNIT,
                          result.returncode, result.stderr.strip())

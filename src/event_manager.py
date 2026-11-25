@@ -637,6 +637,13 @@ class EventManager:
         finally:
             conn.close()
 
+        if pinned and old_clip:
+            # El dueño fijó el pasaje: su clip es evidencia. No se genera una
+            # unión que lo reemplace; la fila queda `both` con el clip y la
+            # ventana del pasaje y los metadatos del ruido del reclamo.
+            logger.info("Evento #%d fijado: conserva el clip del pasaje %s", event_id, old_clip)
+            return event_id
+
         clip_path, duration_ms, muted, start_ts, end_ts, union_ok = self._union_clip(
             passage, audio_list, video_list, noise_window, fields["peak_ts"],
             union_muted=mute_audio or bool(passage_muted),
@@ -668,17 +675,22 @@ class EventManager:
             conn.commit()
         except sqlite3.Error:
             # El reclamo ya está commiteado: propagar la excepción haría que
-            # el llamador inserte un `noise` duplicado. Se conserva el clip
-            # anterior y la fila `both` con los metadatos ya escritos.
-            logger.exception("No se pudo actualizar el clip unión del evento #%d", event_id)
+            # el llamador inserte un `noise` duplicado. La fila sigue
+            # apuntando al clip del pasaje, que se conserva; el clip unión
+            # recién guardado no lo referencia nadie y se borra.
+            logger.exception(
+                "No se pudo actualizar el clip unión del evento #%d: conserva %s",
+                event_id, old_clip or "none",
+            )
+            # Con old_clip como «reemplazo», nunca se borra el archivo que la
+            # fila sigue referenciando aunque los nombres coincidieran.
+            self._delete_replaced_clip(clip_path, old_clip or "")
+            return event_id
         finally:
             conn.close()
 
-        if pinned:
-            # El dueño marcó el pasaje: su clip es evidencia y no se toca.
-            logger.info("Evento #%d fijado: se conserva el clip previo %s", event_id, old_clip)
-        else:
-            self._delete_replaced_clip(old_clip, clip_path)
+        # Sólo con el UPDATE commiteado el clip viejo deja de estar referenciado.
+        self._delete_replaced_clip(old_clip, clip_path)
         return event_id
 
     # ------------------------------------------------------------------

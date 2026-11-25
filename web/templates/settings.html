@@ -302,7 +302,14 @@ function collect() {
     if (f.type === 'boolean') values[f.path] = inputs[0].checked;
     else if (f.type === 'days') values[f.path] = inputs.filter(i => i.checked).map(i => Number(i.value));
     else if (f.type === 'class_groups') {
-      values[f.path] = inputs.filter(i => i.checked).flatMap(i => i.dataset.classes.split(','));
+      // Un grupo indeterminado (partido a mano en config.yaml) que el usuario
+      // no tocó conserva sus miembros actuales; al hacer clic pasa a todo/nada.
+      const current = PAYLOAD.values[f.path] || [];
+      values[f.path] = inputs.flatMap(i => {
+        const classes = i.dataset.classes.split(',');
+        if (i.checked) return classes;
+        return i.indeterminate ? classes.filter(c => current.includes(c)) : [];
+      });
     } else if (f.type === 'rect' || f.type === 'size') {
       const nums = inputs.sort((a,b) => (+a.dataset.index) - (+b.dataset.index)).map(i => i.value);
       if (nums.some(v => v === '')) continue;  // incompleto: no se envía

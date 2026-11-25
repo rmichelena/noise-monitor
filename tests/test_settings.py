@@ -469,6 +469,32 @@ class PsychoacousticTest(SettingsBase):
         self.assertIn("pressure_calibration.id", response.json()["detail"])
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_calibration_id_reread_differently_is_rejected(self):
+        # Issue #21, M2: ruamel (YAML 1.2) escribe `NO` sin comillas y el
+        # servicio (PyYAML, YAML 1.1) lo relee como False: Settings.load lo
+        # rechazaría al arrancar. El guardado da 400 y no escribe.
+        before = self.path.read_bytes()
+        with PHONOMETRY:
+            response = self.post(self.form("loudness_mean", **{"audio.pressure_calibration.id": "NO"}))
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("pressure_calibration", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse((self.dir / "config.yaml.bak").exists())
+
+    def test_psychoacoustic_section_is_validated_as_the_service_reads_it(self):
+        # Un `id: NO` escrito a mano: ruamel lo lee como texto y PyYAML como
+        # False. Guardar otro campo no puede dejar ese archivo como válido.
+        text = self.path.read_text(encoding="utf-8").replace("criterion: dba", "criterion: psychoacoustic")
+        text = text.replace("audio:\n", "audio:\n  pressure_calibration: {id: NO, pa_per_unit: 1.0}\n", 1)
+        text = text.replace("triggers:\n", "triggers:\n  psychoacoustic: {metric: loudness_mean, threshold: 20}\n", 1)
+        self.path.write_text(text, encoding="utf-8")
+        before = self.path.read_bytes()
+        with PHONOMETRY:
+            response = self.post({"triggers.peak_db": 80})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("pressure_calibration.id", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_without_phonometry_nothing_is_written(self):
         before = self.path.read_bytes()
         with NO_PHONOMETRY:
@@ -481,6 +507,112 @@ class PsychoacousticTest(SettingsBase):
     def test_dba_does_not_need_phonometry(self):
         with NO_PHONOMETRY:
             self.assertEqual(self.post({"triggers.peak_db": 80}).status_code, 200)
+
+
+class PartialClassGroupTest(SettingsBase):
+    """Issue #21, M3: un grupo partido a mano (sólo `motorcycle`) que el
+    usuario no toca conserva sus miembros; tocarlo aplica todo o nada."""
+
+    def setUp(self):
+        super().setUp()
+        cfg = self.on_disk()
+        cfg["tracker"]["record_classes"] = ["car", "motorcycle"]
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    def classes(self):
+        return self.on_disk()["tracker"]["record_classes"]
+
+    def test_untouched_partial_group_is_kept_when_another_group_changes(self):
+        # La página manda el grupo indeterminado con sus miembros actuales.
+        response = self.post({"tracker.record_classes": ["motorcycle"]})  # se destildó Autos
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.classes(), ["motorcycle"])
+        response = self.post({"tracker.record_classes": ["motorcycle", "truck"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.classes(), ["truck", "motorcycle"])
+
+    def test_touching_the_group_applies_all_or_nothing(self):
+        self.assertEqual(self.post({"tracker.record_classes": ["car", "motorcycle", "bicycle"]}).status_code, 200)
+        self.assertEqual(self.classes(), ["car", "motorcycle", "bicycle"])
+        self.post({"tracker.record_classes": ["car", "motorcycle"]})  # vuelve a partirse: 400
+        self.assertEqual(self.classes(), ["car", "motorcycle", "bicycle"])
+        self.assertEqual(self.post({"tracker.record_classes": ["car"]}).status_code, 200)
+        self.assertEqual(self.classes(), ["car"])
+
+    def test_a_different_partial_group_is_still_rejected(self):
+        before = self.path.read_bytes()
+        response = self.post({"tracker.record_classes": ["car", "bicycle"]})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Motos y bicis", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
+
+
+class DetectionDefaultsTest(SettingsBase):
+    def test_absent_size_limits_show_the_videomonitor_defaults(self):
+        # Issue #21, M4: sin las claves, la página muestra los valores que usa
+        # VideoMonitor; el 400 de min > max no nombra números invisibles.
+        cfg = self.on_disk()
+        for key in ("detection_min_width", "detection_max_width", "detection_min_height", "detection_max_height"):
+            cfg["video"].pop(key)
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        values = self.client.get("/api/settings", auth=AUTH).json()["values"]
+        self.assertEqual([values[f"video.detection_{k}"] for k in ("min_width", "max_width", "min_height", "max_height")],
+                         [24, 600, 14, 300])
+        original = self.path.read_bytes()
+        response = self.post({"video.detection_min_width": 24, "video.detection_max_height": 300})
+        self.assertEqual(response.json()["changed"], [], "los defaults mostrados no se escriben")
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_defaults_match_videomonitor(self):
+        import inspect
+        from src import video_monitor
+        from web.settings import FIELD_MAP
+
+        source = inspect.getsource(video_monitor.VideoMonitor.__init__)
+        for key in ("detection_min_width", "detection_max_width", "detection_min_height", "detection_max_height"):
+            with self.subTest(key=key):
+                self.assertIn(f'video_cfg.get("{key}", {FIELD_MAP["video." + key]["default"]})', source)
+
+
+class SpeedGeometryTest(SettingsBase):
+    """Issue #21, M5: medido sobre 6a9486b, el comportamiento pedido ya era
+    éste; los tests lo fijan. Con velocidad apagada, un estado incompleto de
+    `speed` no bloquea guardados; encendida, puntos inválidos dan 400."""
+
+    def write_speed(self, speed):
+        cfg = self.on_disk()
+        cfg["speed"] = speed
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    def test_disabled_incomplete_speed_does_not_block_saves(self):
+        for speed in ({"enabled": False}, {"enabled": False, "reference_left_x": 300, "reference_right_x": 300},
+                      {"enabled": False, "reference_left_x": 0, "reference_right_x": 5000}):
+            with self.subTest(speed=speed):
+                self.write_speed(speed)
+                self.assertEqual(self.post({"triggers.peak_db": 80 + len(speed)}).status_code, 200)
+
+    def test_enabled_invalid_points_are_rejected(self):
+        self.write_speed({"enabled": True, "reference_distance_m": 10.0})
+        response = self.post({"triggers.peak_db": 80})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("speed", response.json()["detail"])
+
+
+class RereadTest(SettingsBase):
+    def test_text_field_reread_as_another_type_is_rejected(self):
+        # Sin la sección psicoacústica: lo atrapa la comparación campo a campo.
+        for value in ("yes", "off", "NO"):
+            with self.subTest(value=value):
+                before = self.path.read_bytes()
+                response = self.post({"video.yolo_model_path": value})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn("video.yolo_model_path se releería", response.json()["detail"])
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_plain_text_is_saved(self):
+        response = self.post({"video.yolo_model_path": "models/otro.tflite"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.on_disk()["video"]["yolo_model_path"], "models/otro.tflite")
 
 
 class DetectionSizeTest(SettingsBase):
