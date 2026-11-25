@@ -175,9 +175,10 @@ servicio necesita sudo sin contraseña para ese comando. Desde la consola:
 `sudo systemctl restart noise-monitor`. Para volver atrás, copiar
 `config.yaml.bak` sobre `config.yaml` y reiniciar.
 
-Un pasaje **fijado** que después se correlaciona con un ruido pasa a `both`
-con los datos del ruido, pero conserva su clip y su ventana: la evidencia
-fijada no se reemplaza por el clip unión.
+Un pasaje **fijado** no se reclama: si después se correlaciona con un ruido,
+su fila queda `traffic` sin cambios y el ruido se guarda como `noise` aparte,
+con su propio clip y el vehículo atribuido. Si se fija mientras se genera el
+clip unión, la fila no se toca y la unión se descarta.
 
 ### Disparadores: qué se graba y cuándo
 
@@ -190,7 +191,7 @@ Todas las claves son opcionales; ausentes equivalen a los valores del ejemplo
 | `triggers.noise_only_with_traffic` | Descarta el ruido que no tiene un pasaje asociado. Exige `traffic_enabled`. |
 | `triggers.traffic_enabled` | `false`: los pasajes no se guardan solos (`traffic`). El tracker sigue y un ruido puede reclamar el pasaje como `both`. |
 | `triggers.traffic_only_with_noise` | Un pasaje sólo se guarda si un ruido lo reclama (`both`). Exige `noise_enabled`. |
-| `tracker.record_classes` | Clases que se guardan como `traffic`. En la página, motos y bicis van en una sola casilla porque el detector las confunde. |
+| `tracker.record_classes` | Clases que se guardan como `traffic`. En la página, motos y bicis van en una sola casilla porque el detector las confunde. Vacía con `traffic_enabled` es un error: para no registrar tráfico se apaga `traffic_enabled`. |
 | `triggers.noise_schedule`, `triggers.traffic_schedule` | Horario de cada sección; fuera de él se comporta como apagada. |
 
 Un pasaje que no se guarda por sí mismo (tráfico apagado, fuera de horario,
