@@ -498,6 +498,8 @@ def apply_updates(config: Any, updates: dict[str, Any], base_dir: Path) -> tuple
         for path in ("video.yolo_model_path", "video.yolo_threshold"):
             if _get_path(config, path) is None:
                 _set_path(config, path, FIELD_MAP[path]["default"])
+                # En `changed`: así entra en la comparación de relectura.
+                changed.append(path)
         if not str(config["video"].get("yolo_model_path") or "").strip():
             raise ValueError("video.yolo_model_path es obligatorio con detector=yolo")
     # validate_config incluye TriggerPolicy.from_config: horarios, días, clases

@@ -84,6 +84,13 @@ class TriggerPolicy:
                 )
             classes = frozenset(raw_classes)
 
+        # Tráfico encendido sin ninguna clase no graba ningún pasaje y no lo
+        # avisa en ningún lado: para no registrar tráfico está traffic_enabled.
+        if values["traffic_enabled"] and not classes:
+            raise ValueError(
+                "tracker.record_classes vacío con triggers.traffic_enabled: no se grabaría "
+                "ningún pasaje (para no registrar tráfico, apagá triggers.traffic_enabled)"
+            )
         # Un flag que exige la otra sección no puede convivir con ella apagada:
         # no se guardaría ningún evento de la sección que sí está habilitada.
         if values["noise_enabled"] and values["noise_only_with_traffic"] and not values["traffic_enabled"]:

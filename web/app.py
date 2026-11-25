@@ -927,14 +927,15 @@ def create_app(config: dict, base_dir: Path, audio_monitor=None, video_monitor=N
                 logger.info("Reinicio de %s encolado desde /settings", RESTART_UNIT)
                 return
             if result.returncode == -signal.SIGTERM:
-                # systemctl corre dentro del cgroup del servicio: el reinicio
-                # que encoló lo termina con SIGTERM al bajar el servicio. Que
-                # llegue esa señal prueba que el reinicio está en marcha.
-                logger.info("Reinicio de %s en marcha (systemctl terminado por el propio reinicio)",
-                            RESTART_UNIT)
-                return
-            logger.error("Reinicio de %s falló (rc=%s): %s", RESTART_UNIT,
-                         result.returncode, result.stderr.strip())
+                # Lo esperable es que el reinicio encolado baje el servicio y
+                # termine a systemctl, que corre en su cgroup; pero un SIGTERM
+                # no prueba que el reinicio se haya encolado. Aviso, no error,
+                # y se libera el pedido para poder reintentar.
+                logger.warning("Reinicio de %s: systemctl terminado por SIGTERM (rc=-15); "
+                               "si el servicio no se reinició, reintentar", RESTART_UNIT)
+            else:
+                logger.error("Reinicio de %s falló (rc=%s): %s", RESTART_UNIT,
+                             result.returncode, result.stderr.strip())
         with restart_lock:
             restart_state["pending"] = False
 

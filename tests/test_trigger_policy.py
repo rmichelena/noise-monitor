@@ -161,6 +161,14 @@ class PolicyConfigTest(unittest.TestCase):
         self.cfg["tracker"]["record_classes"] = "car"
         self.assert_config_error("tracker.record_classes")
 
+    def test_empty_record_classes_needs_traffic_off(self):
+        # Issue #21 r2, M-A: tráfico encendido sin clases no grababa ningún
+        # pasaje y no lo avisaba. Con el tráfico apagado, `[]` es válido.
+        self.cfg["tracker"]["record_classes"] = []
+        self.assert_config_error("record_classes vacío")
+        self.cfg["triggers"]["traffic_enabled"] = False
+        validate_config(self.cfg)
+
     def test_noise_only_with_traffic_needs_traffic(self):
         self.cfg["triggers"].update(noise_only_with_traffic=True, traffic_enabled=False)
         self.assert_config_error("noise_only_with_traffic")

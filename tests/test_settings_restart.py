@@ -157,15 +157,16 @@ class RestartTest(unittest.TestCase):
         self.assertEqual(self.restart().status_code, 202)
         self.assertEqual(len(FakeTimer.created), 2)
 
-    def test_sigterm_from_the_restart_itself_is_success(self):
-        # En producción systemctl muere con -15 cuando el reinicio que encoló
-        # baja el servicio: no es un error ni libera el pedido en curso.
+    def test_sigterm_is_a_warning_and_allows_a_retry(self):
+        # rc=-15: lo esperable es que el propio reinicio termine a systemctl,
+        # pero no prueba que se haya encolado. Aviso (no error) y se libera.
         self.restart_rc = -15
         self.restart()
-        with self.assertNoLogs("web.app", level="ERROR"):
+        with self.assertLogs("web.app", level="WARNING") as logs:
             FakeTimer.created[0].fire()
+        self.assertTrue(all(r.levelname == "WARNING" for r in logs.records), logs.output)
         self.assertEqual(self.restart().status_code, 202)
-        self.assertEqual(len(FakeTimer.created), 1, "sigue en curso: no agenda otro")
+        self.assertEqual(len(FakeTimer.created), 2, "se puede reintentar")
 
     def test_sudo_without_permission_is_500_before_answering(self):
         self.preflight_rc = 1

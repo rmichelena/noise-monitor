@@ -539,6 +539,16 @@ class PartialClassGroupTest(SettingsBase):
         self.assertEqual(self.post({"tracker.record_classes": ["car"]}).status_code, 200)
         self.assertEqual(self.classes(), ["car"])
 
+    def test_unchecking_every_group_with_traffic_on_is_rejected(self):
+        before = self.path.read_bytes()
+        response = self.post({"tracker.record_classes": []})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("record_classes vacío", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
+        # Con el tráfico apagado en el mismo guardado, sí.
+        response = self.post({"tracker.record_classes": [], "triggers.traffic_enabled": False})
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_a_different_partial_group_is_still_rejected(self):
         before = self.path.read_bytes()
         response = self.post({"tracker.record_classes": ["car", "bicycle"]})
@@ -613,6 +623,31 @@ class RereadTest(SettingsBase):
         response = self.post({"video.yolo_model_path": "models/otro.tflite"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.on_disk()["video"]["yolo_model_path"], "models/otro.tflite")
+
+
+class YoloRereadTest(SettingsBase):
+    def test_yolo_backfill_enters_changed_and_the_reread_check(self):
+        # Issue #21 r2: los yolo_* completados al elegir YOLO se escriben y
+        # tienen que pasar por la comparación de relectura como el resto.
+        cfg = self.on_disk()
+        cfg["video"].pop("yolo_model_path"); cfg["video"].pop("yolo_threshold")
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        response = self.post({"video.detector": "yolo"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(sorted(response.json()["changed"]),
+                         ["video.detector", "video.yolo_model_path", "video.yolo_threshold"])
+        self.post({"video.detector": "ssd"})
+        cfg = self.on_disk()
+        cfg["video"].pop("yolo_model_path")
+        self.path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        import web.settings as settings
+
+        before = self.path.read_bytes()
+        with mock.patch.dict(settings.FIELD_MAP["video.yolo_model_path"], {"default": "yes"}):
+            response = self.post({"video.detector": "yolo"})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("video.yolo_model_path se releería", response.json()["detail"])
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 class DetectionSizeTest(SettingsBase):

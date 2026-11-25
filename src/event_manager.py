@@ -606,7 +606,8 @@ class EventManager:
     ) -> int | None:
         """Convierte el `traffic` del pasaje en `both` con un único clip unión.
 
-        Devuelve el id del evento, o None si el pasaje ya no era `traffic`.
+        Devuelve el id del evento, o None si el pasaje ya no era `traffic` o
+        está fijado: en los dos casos el llamador guarda el ruido como `noise`.
         """
         event_id = passage["db_id"]
         conn = sqlite3.connect(self.db_path)
@@ -618,7 +619,7 @@ class EventManager:
                     db_max = ?, db_avg = ?, trigger_type = ?, sound_class = ?,
                     sound_category = ?, sound_confidence = ?, sound_labels_json = ?,
                     confidence = ?
-                WHERE id = ? AND kind = 'traffic'
+                WHERE id = ? AND kind = 'traffic' AND COALESCE(pinned, 0) = 0
                 """,
                 (
                     fields["timestamp"], fields["peak_ts"], fields["db_max"],
@@ -629,20 +630,24 @@ class EventManager:
             ).rowcount
             conn.commit()
             if not claimed:
+                # El pin va en el mismo WHERE que el reclamo: un pin entre una
+                # lectura previa y el UPDATE no puede colarse.
+                state = conn.execute(
+                    "SELECT kind, pinned FROM events WHERE id = ?", (event_id,)
+                ).fetchone()
+                if state is not None and state[0] == "traffic" and state[1]:
+                    # El dueño fijó el pasaje: su fila no se toca. El ruido se
+                    # guarda como `noise` con su propio clip y su atribución.
+                    logger.info("Pasaje #%d fijado: el ruido se guarda aparte", event_id)
+                    passage["claimed"] = False
+                    return None
                 logger.warning("El pasaje #%d ya no es traffic; el ruido queda aparte", event_id)
                 return None
-            old_clip, passage_muted, pinned = conn.execute(
-                "SELECT clip_path, audio_muted, pinned FROM events WHERE id = ?", (event_id,)
+            old_clip, passage_muted = conn.execute(
+                "SELECT clip_path, audio_muted FROM events WHERE id = ?", (event_id,)
             ).fetchone()
         finally:
             conn.close()
-
-        if pinned and old_clip:
-            # El dueño fijó el pasaje: su clip es evidencia. No se genera una
-            # unión que lo reemplace; la fila queda `both` con el clip y la
-            # ventana del pasaje y los metadatos del ruido del reclamo.
-            logger.info("Evento #%d fijado: conserva el clip del pasaje %s", event_id, old_clip)
-            return event_id
 
         clip_path, duration_ms, muted, start_ts, end_ts, union_ok = self._union_clip(
             passage, audio_list, video_list, noise_window, fields["peak_ts"],
@@ -667,12 +672,21 @@ class EventManager:
 
         conn = sqlite3.connect(self.db_path)
         try:
-            conn.execute(
+            # `pinned = 0` también acá: el clip unión tarda segundos y el
+            # dueño puede fijar la fila mientras tanto.
+            updated = conn.execute(
                 "UPDATE events SET clip_path = ?, duration_ms = ?, audio_muted = ?,"
-                " start_ts = ?, end_ts = ? WHERE id = ?",
+                " start_ts = ?, end_ts = ? WHERE id = ? AND COALESCE(pinned, 0) = 0",
                 (clip_path, duration_ms, 1 if muted else 0, start_ts, end_ts, event_id),
-            )
+            ).rowcount
             conn.commit()
+            if not updated:
+                logger.warning(
+                    "Evento #%d fijado durante el clip unión: conserva %s y se descarta la unión",
+                    event_id, old_clip or "none",
+                )
+                self._delete_replaced_clip(clip_path, old_clip or "")
+                return event_id
         except sqlite3.Error:
             # El reclamo ya está commiteado: propagar la excepción haría que
             # el llamador inserte un `noise` duplicado. La fila sigue
