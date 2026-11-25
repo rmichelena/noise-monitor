@@ -136,7 +136,11 @@ sin cifrar; desde afuera conviene entrar por el túnel HTTPS (ver Operación).
 ruta, un tipo inválido o una combinación incoherente (por ejemplo
 `noise_only_with_traffic` con el tráfico apagado) responde 400 y no se escribe
 nada. Antes de reemplazar `config.yaml`, la config completa se valida y el
-archivo escrito se vuelve a leer con el mismo loader del servicio. El
+archivo escrito se vuelve a leer con el mismo loader del servicio: cada campo
+guardado tiene que releerse con el valor pedido. Un texto que YAML 1.1 lee como
+otra cosa (`NO`, `yes`, `off` en un ID o una ruta se releen como booleanos)
+responde 400 nombrando el campo; si hace falta ese texto, se
+escribe a mano entre comillas en `config.yaml`. El
 reemplazo es atómico y la versión anterior queda en `config.yaml.bak`. Se
 conservan los comentarios y el estilo de listas del archivo: guardar un campo
 cambia sólo sus líneas (una lista escrita en una línea, `[a, b]`, se
@@ -163,10 +167,17 @@ Otras validaciones que también aplican al arrancar:
 El editor de geometría trabaja en píxeles de `video.resolution`; si la cámara
 entrega otro tamaño, lo avisa.
 
-Los cambios **se aplican al reiniciar** el servicio
-(`sudo systemctl restart noise-monitor`): los monitores leen la configuración
-al arrancar. Para volver atrás, copiar `config.yaml.bak` sobre `config.yaml` y
-reiniciar.
+Los cambios **se aplican al reiniciar** el servicio: los monitores leen la
+configuración al arrancar. El botón «Reiniciar servicio» de la página valida
+antes `config.yaml` (si no arrancaría, responde 400 y no reinicia) y ejecuta
+`sudo -n systemctl --no-block restart noise-monitor.service`; el usuario del
+servicio necesita sudo sin contraseña para ese comando. Desde la consola:
+`sudo systemctl restart noise-monitor`. Para volver atrás, copiar
+`config.yaml.bak` sobre `config.yaml` y reiniciar.
+
+Un pasaje **fijado** que después se correlaciona con un ruido pasa a `both`
+con los datos del ruido, pero conserva su clip y su ventana: la evidencia
+fijada no se reemplaza por el clip unión.
 
 ### Disparadores: qué se graba y cuándo
 
